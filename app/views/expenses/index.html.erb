@@ -1,0 +1,28 @@
+<h1>Gastos</h1>
+
+<p>
+  Total mostrados: <%= @expenses.size %>
+</p>
+
+<table cellspacing="0" cellpadding="6" border="1">
+  <thead>
+    <tr>
+      <th>Fecha</th>
+      <th>Monto</th>
+      <th>Categoría</th>
+      <th>Descripción</th>
+      <th>Usuario</th>
+    </tr>
+  </thead>
+  <tbody>
+    <% @expenses.each do |e| %>
+      <tr>
+        <td><%= e.spent_at&.in_time_zone(e.user&.time_zone || "America/Argentina/Buenos_Aires")&.strftime("%Y-%m-%d %H:%M") %></td>
+        <td><%= number_to_currency(e.amount_ars, unit: "$", separator: ",", delimiter: ".", format: "%u%n") %> <%= e.currency %></td>
+        <td><%= [e.category, e.subcategory].compact.join(" / ") %></td>
+        <td><%= e.description.presence || e.raw_text %></td>
+        <td><%= e.user&.telegram_user_id %></td>
+      </tr>
+    <% end %>
+  </tbody>
+</table>

@@ -1,0 +1,96 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../config/environment"
+require "telegram/bot"
+
+token = ENV["TELEGRAM_BOT_TOKEN"].to_s
+abort "Falta TELEGRAM_BOT_TOKEN" if token.empty?
+
+def ensure_user(message)
+  telegram_user_id = message.from&.id&.to_s
+  chat_id = message.chat&.id&.to_s
+  raise "No pude leer telegram_user_id/chat_id" if telegram_user_id.blank? || chat_id.blank?
+
+  user = User.find_or_create_by!(telegram_user_id: telegram_user_id)
+  user.update!(telegram_chat_id: chat_id) if user.telegram_chat_id != chat_id
+  user
+end
+
+def format_ars(amount_cents)
+  pesos = amount_cents.to_i / 100.0
+  format("$%.2f ARS", pesos)
+end
+
+Telegram::Bot::Client.run(token) do |bot|
+  ingestor = ExpenseIngestor.new
+  bot.listen do |message|
+    case message
+    when Telegram::Bot::Types::Message
+      next if message.text.blank? && message.contact.blank?
+
+      user = ensure_user(message)
+
+      if message.text&.start_with?("/start")
+        bot.api.send_message(
+          chat_id: message.chat.id,
+          text: "Listo. Mandame gastos tipo: \"hamburguesa 8500\" o \"pago luz 23000\".\n\nSi querés asociar teléfono, mandá /phone y compartís tu contacto."
+        )
+        next
+      end
+
+      if message.text&.start_with?("/help")
+        bot.api.send_message(
+          chat_id: message.chat.id,
+          text: "Ejemplos:\n- hamburguesa 8500\n- pago internet 24000\n- kiosko gaseosa 2500\n\nSi mandás sin monto, te lo pregunto."
+        )
+        next
+      end
+
+      if message.text&.start_with?("/phone")
+        kb = Telegram::Bot::Types::ReplyKeyboardMarkup.new(
+          keyboard: [[Telegram::Bot::Types::KeyboardButton.new(text: "Compartir mi contacto", request_contact: true)]],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        )
+        bot.api.send_message(chat_id: message.chat.id, text: "Tocá para compartir tu número (opcional).", reply_markup: kb)
+        next
+      end
+
+      if message.contact
+        # Seguridad: solo aceptamos el contacto propio (cuando Telegram provee user_id).
+        if message.contact.user_id.present? && message.contact.user_id.to_s != message.from&.id&.to_s
+          bot.api.send_message(chat_id: message.chat.id, text: "Por seguridad, solo puedo guardar tu propio contacto.")
+          next
+        end
+
+        phone = message.contact.phone_number.to_s
+        phone = phone.start_with?("+") ? phone : "+#{phone}"
+
+        # Identidad canónica por teléfono:
+        # - Si existe otro User con ese phone, mergeamos gastos/borradores y nos quedamos con uno solo.
+        existing = User.find_by(phone_e164: phone)
+        if existing && existing.id != user.id
+          Expense.where(user_id: user.id).update_all(user_id: existing.id)
+          DraftExpense.where(user_id: user.id).update_all(user_id: existing.id)
+          user.destroy!
+          user = existing
+        end
+
+        user.update!(phone_e164: phone, telegram_chat_id: message.chat.id.to_s)
+        bot.api.send_message(chat_id: message.chat.id, text: "OK. Teléfono asociado: #{phone}")
+        next
+      end
+
+      text = message.text.to_s.strip
+
+      # Si hay un borrador esperando monto, aceptar número como respuesta.
+      result = ingestor.ingest(user: user, text: text)
+      bot.api.send_message(chat_id: message.chat.id, text: result.reply_text) if result.reply_text.present?
+    end
+  rescue StandardError => e
+    bot.api.send_message(chat_id: message.chat.id, text: "Error: #{e.class} - #{e.message}") rescue nil
+  end
+end
+
+
