@@ -2,7 +2,9 @@ module Api
   class ExpensesController < BaseController
     def index
       user = find_user!
-      render json: user.expenses.order(spent_at: :desc).limit(100).as_json(only: %i[id amount_cents currency description category subcategory spent_at raw_text created_at])
+      render json: user.expenses.order(spent_at: :desc).limit(100).as_json(
+        only: %i[id amount_cents currency description category subcategory spent_at raw_text created_at]
+      )
     end
 
     def create
@@ -29,7 +31,9 @@ module Api
         if telegram_user_id.present?
           User.find_or_create_by!(telegram_user_id: telegram_user_id.to_s)
         elsif phone_e164.present?
-          User.find_or_create_by_phone!(phone_e164)
+          phone = phone_e164.to_s.strip
+          phone = "+#{phone}" unless phone.start_with?("+")
+          User.find_or_create_by!(telegram_user_id: "phone:#{phone}")
         end
 
       raise ActionController::BadRequest, "telegram_user_id o phone_e164 requerido" if user.nil?

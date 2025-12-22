@@ -1,10 +1,4 @@
 Rails.application.routes.draw do
-  namespace :webhooks do
-    post "twilio/whatsapp", to: "twilio#whatsapp"
-    get "meta/whatsapp", to: "meta_whatsapp#verify"
-    post "meta/whatsapp", to: "meta_whatsapp#receive"
-  end
-
   namespace :api do
     resources :expenses, only: %i[index create]
   end

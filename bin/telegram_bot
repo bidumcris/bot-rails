@@ -4,8 +4,10 @@
 require_relative "../config/environment"
 require "telegram/bot"
 
-token = ENV["TELEGRAM_BOT_TOKEN"].to_s
-abort "Falta TELEGRAM_BOT_TOKEN" if token.empty?
+token_raw = ENV["TELEGRAM_BOT_TOKEN"].to_s
+# Acepta tanto el token puro como strings donde el usuario pegó "HTTP API:\n<token>"
+token = token_raw.strip[/\d+:[A-Za-z0-9_-]+/]
+abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.blank?
 
 def ensure_user(message)
   telegram_user_id = message.from&.id&.to_s
@@ -23,7 +25,6 @@ def format_ars(amount_cents)
 end
 
 Telegram::Bot::Client.run(token) do |bot|
-  ingestor = ExpenseIngestor.new
   bot.listen do |message|
     case message
     when Telegram::Bot::Types::Message
@@ -34,7 +35,7 @@ Telegram::Bot::Client.run(token) do |bot|
       if message.text&.start_with?("/start")
         bot.api.send_message(
           chat_id: message.chat.id,
-          text: "Listo. Mandame gastos tipo: \"hamburguesa 8500\" o \"pago luz 23000\".\n\nSi querés asociar teléfono, mandá /phone y compartís tu contacto."
+          text: "Listo. Mandame gastos tipo: \"hamburguesa 8500\" o \"pago luz 23000\".\n\nSi mandás sin monto, te lo pregunto.\n\nSi querés asociar teléfono, mandá /phone y compartís tu contacto."
         )
         next
       end
@@ -58,7 +59,7 @@ Telegram::Bot::Client.run(token) do |bot|
       end
 
       if message.contact
-        # Seguridad: solo aceptamos el contacto propio (cuando Telegram provee user_id).
+        # Seguridad: aceptar solo el contacto propio (cuando Telegram provee user_id).
         if message.contact.user_id.present? && message.contact.user_id.to_s != message.from&.id&.to_s
           bot.api.send_message(chat_id: message.chat.id, text: "Por seguridad, solo puedo guardar tu propio contacto.")
           next
@@ -66,18 +67,7 @@ Telegram::Bot::Client.run(token) do |bot|
 
         phone = message.contact.phone_number.to_s
         phone = phone.start_with?("+") ? phone : "+#{phone}"
-
-        # Identidad canónica por teléfono:
-        # - Si existe otro User con ese phone, mergeamos gastos/borradores y nos quedamos con uno solo.
-        existing = User.find_by(phone_e164: phone)
-        if existing && existing.id != user.id
-          Expense.where(user_id: user.id).update_all(user_id: existing.id)
-          DraftExpense.where(user_id: user.id).update_all(user_id: existing.id)
-          user.destroy!
-          user = existing
-        end
-
-        user.update!(phone_e164: phone, telegram_chat_id: message.chat.id.to_s)
+        user.update!(phone_e164: phone)
         bot.api.send_message(chat_id: message.chat.id, text: "OK. Teléfono asociado: #{phone}")
         next
       end
@@ -85,8 +75,64 @@ Telegram::Bot::Client.run(token) do |bot|
       text = message.text.to_s.strip
 
       # Si hay un borrador esperando monto, aceptar número como respuesta.
-      result = ingestor.ingest(user: user, text: text)
-      bot.api.send_message(chat_id: message.chat.id, text: result.reply_text) if result.reply_text.present?
+      draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
+      if draft && text.match?(/\d/)
+        amount_cents, _ = ExpenseTextParser.parse(text, currency: user.currency)
+        if amount_cents.nil?
+          bot.api.send_message(chat_id: message.chat.id, text: "No entendí el monto. Probá: 8500 o 23.000,50")
+          next
+        end
+
+        description = draft.extracted["description"].presence || draft.raw_text
+        cat = ExpenseClassifier.new.classify(description)
+
+        expense = user.expenses.create!(
+          amount_cents: amount_cents,
+          currency: user.currency,
+          description: description,
+          category: cat.category,
+          subcategory: cat.subcategory,
+          raw_text: draft.raw_text,
+          llm_provider: ENV["LLM_PROVIDER"],
+          llm_model: ENV["OPENAI_MODEL"],
+          llm_confidence: cat.confidence,
+          metadata: { flow: "draft_amount" }
+        )
+
+        draft.destroy!
+        bot.api.send_message(
+          chat_id: message.chat.id,
+          text: "Registrado: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+        )
+        next
+      end
+
+      amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
+      if amount_cents.nil?
+        user.draft_expenses.create!(raw_text: text, extracted: { "description" => description }, state: "awaiting_amount")
+        bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"?")
+        next
+      end
+
+      cat = ExpenseClassifier.new.classify(description)
+      expense = user.expenses.create!(
+        amount_cents: amount_cents,
+        currency: user.currency,
+        description: description,
+        category: cat.category,
+        subcategory: cat.subcategory,
+        spent_at: Time.zone.now,
+        raw_text: text,
+        llm_provider: ENV["LLM_PROVIDER"],
+        llm_model: ENV["OPENAI_MODEL"],
+        llm_confidence: cat.confidence,
+        metadata: { flow: "direct" }
+      )
+
+      bot.api.send_message(
+        chat_id: message.chat.id,
+        text: "Registrado: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+      )
     end
   rescue StandardError => e
     bot.api.send_message(chat_id: message.chat.id, text: "Error: #{e.class} - #{e.message}") rescue nil
