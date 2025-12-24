@@ -5,15 +5,39 @@ class ExpenseTextParser
     raw = text.to_s.strip
     return [nil, raw] if raw.blank?
 
+    raw = expand_shorthand_amounts(raw)
+
     # Busca el último número "grande" del mensaje (suele ser el monto)
     # Formatos: 8500 | 8.500 | 8,500 | 23.000,50 | 23000.50
     number_tokens = raw.scan(/(?:\$|\b)(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\b)?/)
     token = number_tokens.flatten.last
 
     amount_cents = token ? parse_to_cents(token, currency: currency) : nil
-    description = token ? raw.sub(token, "").gsub(/\s+/, " ").strip : raw
+    description = token ? raw.sub(token, "") : raw
+    description = clean_description(description)
 
     [amount_cents, description.presence || raw]
+  end
+
+  # Limpia palabras típicas de moneda y signos sueltos, para dejar una descripción usable.
+  def self.clean_description(text)
+    s = text.to_s
+    s = s.gsub("$", " ")
+    s = s.gsub(/\b(pesos?|ars)\b/i, " ")
+    s = s.gsub(/\s+/, " ").strip
+    s = s.gsub(/\A[-–—:;,]+\s*/, "").gsub(/\s*[-–—:;,]+\z/, "").strip
+    s
+  end
+
+  # Expande atajos comunes (23k, 23 mil) a números normales para que el parser sea determinístico.
+  def self.expand_shorthand_amounts(text)
+    s = text.to_s
+    s.gsub(/(\d+(?:[.,]\d+)?)\s*(k|mil)\b/i) do
+      num = Regexp.last_match(1).tr(",", ".")
+      base = num.to_f
+      expanded = (base * 1000).round
+      expanded.to_s
+    end
   end
 
   def self.parse_to_cents(token, currency:)

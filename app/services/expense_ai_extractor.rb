@@ -38,13 +38,15 @@ class ExpenseAiExtractor
           content: <<~TEXT
             Extraé un gasto desde el texto y devolvé JSON con:
             - amount_cents: integer (ARS * 100) o null
-            - description: string (descripción normalizada sin el monto)
+            - description: string (descripción normalizada sin el monto, SIN dígitos y sin palabras de moneda como "pesos"/"ARS")
             - category: una de #{CATEGORIES}
             - subcategory: string o null
             - confidence: número 0..1
 
             Reglas:
             - "23k", "23 mil", "23.000" => 23000 ARS
+            - "Futbol 4500 pesos" => amount_cents: 450000, description: "Futbol"
+            - No inventes números. Si no hay monto, amount_cents debe ser null.
             - Si hay fecha tipo "ayer", ignorala (no la necesitamos ahora).
             - Si el texto es ambiguo, elegí category = "Otros" y confidence baja.
 

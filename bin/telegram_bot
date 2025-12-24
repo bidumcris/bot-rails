@@ -115,14 +115,9 @@ Telegram::Bot::Client.run(token) do |bot|
       end
 
       # Primero intentamos interpretar con IA (si está configurada).
+      # El monto lo parseamos de forma determinística (evita errores de centavos del LLM).
+      amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
       extracted = ai.extract(text, currency: user.currency)
-      amount_cents = extracted.amount_cents
-      description = extracted.description
-
-      # Fallback: parser clásico si IA no está configurada o no encontró monto.
-      if amount_cents.nil?
-        amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
-      end
 
       if amount_cents.nil?
         user.draft_expenses.create!(raw_text: text, extracted: { "description" => description }, state: "awaiting_amount")
@@ -147,7 +142,7 @@ Telegram::Bot::Client.run(token) do |bot|
         llm_provider: ENV["LLM_PROVIDER"],
         llm_model: ENV["OPENAI_MODEL"],
         llm_confidence: cat.confidence,
-        metadata: { flow: "direct" }
+        metadata: { flow: "direct", parser: { amount_cents: amount_cents } }
       )
 
       bot.api.send_message(
