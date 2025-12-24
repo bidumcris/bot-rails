@@ -9,7 +9,9 @@ class ExpenseTextParser
 
     # Busca el último número "grande" del mensaje (suele ser el monto)
     # Formatos: 8500 | 8.500 | 8,500 | 23.000,50 | 23000.50
-    number_tokens = raw.scan(/(?:\$|\b)(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\b)?/)
+    # Importante: el branch con miles exige al menos un separador ( + ) para no capturar solo los primeros 3 dígitos
+    # de números largos sin separadores (ej "4500" => no debe capturar "450").
+    number_tokens = raw.scan(/(?:\$|\b)(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\b)?/)
     token = number_tokens.flatten.last
 
     amount_cents = token ? parse_to_cents(token, currency: currency) : nil
