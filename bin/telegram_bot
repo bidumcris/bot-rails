@@ -25,6 +25,7 @@ def format_ars(amount_cents)
 end
 
 Telegram::Bot::Client.run(token) do |bot|
+  ai = ExpenseAiExtractor.new
   bot.listen do |message|
     case message
     when Telegram::Bot::Types::Message
@@ -84,7 +85,13 @@ Telegram::Bot::Client.run(token) do |bot|
         end
 
         description = draft.extracted["description"].presence || draft.raw_text
-        cat = ExpenseClassifier.new.classify(description)
+        extracted = ai.extract(description, currency: user.currency)
+        cat =
+          if extracted.category.present?
+            ExpenseClassifier::Category.new(category: extracted.category, subcategory: extracted.subcategory, confidence: extracted.confidence)
+          else
+            ExpenseClassifier.new.classify(description)
+          end
 
         expense = user.expenses.create!(
           amount_cents: amount_cents,
@@ -107,14 +114,28 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
+      # Primero intentamos interpretar con IA (si está configurada).
+      extracted = ai.extract(text, currency: user.currency)
+      amount_cents = extracted.amount_cents
+      description = extracted.description
+
+      # Fallback: parser clásico si IA no está configurada o no encontró monto.
+      if amount_cents.nil?
+        amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
+      end
+
       if amount_cents.nil?
         user.draft_expenses.create!(raw_text: text, extracted: { "description" => description }, state: "awaiting_amount")
         bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"?")
         next
       end
 
-      cat = ExpenseClassifier.new.classify(description)
+      cat =
+        if extracted.category.present?
+          ExpenseClassifier::Category.new(category: extracted.category, subcategory: extracted.subcategory, confidence: extracted.confidence)
+        else
+          ExpenseClassifier.new.classify(description)
+        end
       expense = user.expenses.create!(
         amount_cents: amount_cents,
         currency: user.currency,
