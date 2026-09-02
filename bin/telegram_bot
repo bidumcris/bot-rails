@@ -63,12 +63,16 @@ def command_name(text)
   text.to_s.split(/\s+/, 2).first.to_s.sub(%r{\A/}, "").split("@", 2).first.downcase
 end
 
+def btn(label)
+  Telegram::Bot::Types::KeyboardButton.new(text: label)
+end
+
 def occupation_keyboard
   Telegram::Bot::Types::ReplyKeyboardMarkup.new(
     keyboard: [
-      ["Sistemas / desarrollo", "Pilates / servicios"],
-      ["Comercio", "Empleado"],
-      ["Otro"]
+      [btn("Sistemas / desarrollo"), btn("Pilates / servicios")],
+      [btn("Comercio"), btn("Empleado")],
+      [btn("Otro")]
     ],
     resize_keyboard: true,
     one_time_keyboard: true
