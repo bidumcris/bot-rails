@@ -118,6 +118,10 @@ ssh bot
 sudo systemctl status pilates bot-telegram caddy --no-pager
 sudo journalctl -u bot-telegram -f
 curl -s http://127.0.0.1:11434/api/tags   # solo con túnel activo
+
+# Notas de voz (una vez):
+# sudo ./script/install_whisper_oracle.sh
+# deja /opt/whisper/whisper-cli + ggml-base.bin
 ```
 
 ---

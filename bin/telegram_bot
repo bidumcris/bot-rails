@@ -11,13 +11,14 @@ abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.
 HELP_TEXT = <<~TXT.strip
   🧾 Bot de gastos e ingresos (ARS + dólar oficial BNA)
 
-  Registrar (texto o foto de comprobante):
+  Registrar (texto, nota de voz o foto de comprobante):
   • hamburguesa 8500
   • almohadillas 2500 por transferencia de mercadopago
   • netflix 8 usd
   • cobro 84150 servicio pilates
   • transferencia 21mil de gime
   • 2 menús 9000 cada uno
+  • 🎤 una nota de voz diciendo lo mismo
 
   Si un monto se ve raro (hamburguesa a $125.000, Netflix carísimo), te pregunto antes de guardar.
 
@@ -418,6 +419,116 @@ def download_telegram_file(token, file_path, message_id)
   dest
 end
 
+def handle_natural_text(bot, chat_id, user, text, ai, metadata: {})
+  confirmation = handle_confirmation(bot, chat_id, user, text)
+  return if confirmation == :handled
+
+  if confirmation == :ignore
+    user.draft_expenses.where(state: "awaiting_confirmation").delete_all
+  end
+
+  draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
+  if draft && text.match?(/\d/)
+    amount_cents, _, kind_from_amount, payment_from_amount = ExpenseTextParser.parse(
+      text,
+      currency: user.currency,
+      usd_venta: BnaOfficialDollar.current&.venta
+    )
+    if amount_cents.nil?
+      bot.api.send_message(chat_id: chat_id, text: "No entendí el monto. Probá: 8500, 23.000,50 o 8 usd")
+      return
+    end
+
+    description = draft.extracted["description"].presence || draft.raw_text
+    raw_text = draft.raw_text
+    kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
+    payment_method = payment_from_amount.presence || draft.extracted["payment_method"]
+    extracted = extract_for(user, description, ai)
+    kind = extracted.kind if extracted.kind.present? && !PaymentMethodDetector.outflow?(raw_text)
+    draft.destroy!
+    save_or_confirm(
+      bot,
+      chat_id,
+      user,
+      amount_cents: amount_cents,
+      description: description,
+      kind: kind,
+      extracted: extracted,
+      raw_text: raw_text,
+      metadata: { flow: "draft_amount" }.merge(metadata),
+      payment_method: payment_method
+    )
+    return
+  end
+
+  extracted = extract_for(user, text, ai)
+  amount_cents, description, kind, payment_method = resolve_amount_and_kind(text, extracted)
+
+  if amount_cents.nil?
+    user.draft_expenses.where(state: "awaiting_amount").delete_all
+    user.draft_expenses.create!(
+      raw_text: text,
+      extracted: { "description" => description, "kind" => kind, "payment_method" => payment_method },
+      state: "awaiting_amount"
+    )
+    bot.api.send_message(chat_id: chat_id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd.")
+    return
+  end
+
+  save_or_confirm(
+    bot,
+    chat_id,
+    user,
+    amount_cents: amount_cents,
+    description: description,
+    kind: kind,
+    extracted: extracted,
+    raw_text: text,
+    metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind, payment_method: payment_method } }.merge(metadata),
+    payment_method: payment_method
+  )
+end
+
+def handle_voice(bot, token, message, user, ai)
+  media = message.voice || message.audio
+  return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer el audio.") unless media
+
+  unless VoiceTranscriber.available?
+    bot.api.send_message(
+      chat_id: message.chat.id,
+      text: "Recibí el audio, pero todavía no hay transcripción en este servidor. Escribí el gasto o mandá una foto."
+    )
+    return
+  end
+
+  duration = media.respond_to?(:duration) ? media.duration.to_i : 0
+  if duration > VoiceTranscriber::MAX_SECONDS
+    bot.api.send_message(
+      chat_id: message.chat.id,
+      text: "El audio es largo (máx. #{VoiceTranscriber::MAX_SECONDS} s). Mandá uno más corto o escribilo."
+    )
+    return
+  end
+
+  bot.api.send_message(chat_id: message.chat.id, text: "🎧 Escuchando...")
+  file = bot.api.get_file(file_id: media.file_id)
+  path = download_telegram_file(token, file.file_path, "voice-#{message.message_id}")
+  unless path
+    bot.api.send_message(chat_id: message.chat.id, text: "No pude descargar el audio. Probá de nuevo.")
+    return
+  end
+
+  text = VoiceTranscriber.transcribe(path)
+  FileUtils.rm_f(path)
+  if text.blank?
+    bot.api.send_message(chat_id: message.chat.id, text: "No pude entender el audio. Probá de nuevo o escribilo.")
+    return
+  end
+
+  bot.api.send_message(chat_id: message.chat.id, text: "📝 Escuché: \"#{text}\"")
+  handle_natural_text(bot, message.chat.id, user, text, ai, metadata: { flow: "voice" })
+end
+
 def handle_photo(bot, token, message, user, ai)
   photo = Array(message.photo).max_by { |p| p.file_size.to_i }
   return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer la foto.") unless photo
@@ -494,11 +605,16 @@ Telegram::Bot::Client.run(token) do |bot|
   bot.listen do |message|
     case message
     when Telegram::Bot::Types::Message
-      next if message.text.blank? && message.contact.blank? && message.photo.blank?
+      next if message.text.blank? && message.contact.blank? && message.photo.blank? && message.voice.blank? && message.audio.blank?
 
       user = ensure_user(message)
       text = message.text.to_s.strip
       cmd = command_name(text)
+
+      if (message.voice.present? || message.audio.present?) && !user.needs_onboarding?
+        handle_voice(bot, token, message, user, ai)
+        next
+      end
 
       if message.photo.present? && !user.needs_onboarding?
         handle_photo(bot, token, message, user, ai)
@@ -617,73 +733,7 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      confirmation = handle_confirmation(bot, message.chat.id, user, text)
-      next if confirmation == :handled
-
-      if confirmation == :ignore
-        user.draft_expenses.where(state: "awaiting_confirmation").delete_all
-      end
-
-      draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
-      if draft && text.match?(/\d/)
-        amount_cents, _, kind_from_amount, payment_from_amount = ExpenseTextParser.parse(
-          text,
-          currency: user.currency,
-          usd_venta: BnaOfficialDollar.current&.venta
-        )
-        if amount_cents.nil?
-          bot.api.send_message(chat_id: message.chat.id, text: "No entendí el monto. Probá: 8500, 23.000,50 o 8 usd")
-          next
-        end
-
-        description = draft.extracted["description"].presence || draft.raw_text
-        raw_text = draft.raw_text
-        kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
-        payment_method = payment_from_amount.presence || draft.extracted["payment_method"]
-        extracted = extract_for(user, description, ai)
-        kind = extracted.kind if extracted.kind.present? && !PaymentMethodDetector.outflow?(raw_text)
-        draft.destroy!
-        save_or_confirm(
-          bot,
-          message.chat.id,
-          user,
-          amount_cents: amount_cents,
-          description: description,
-          kind: kind,
-          extracted: extracted,
-          raw_text: raw_text,
-          metadata: { flow: "draft_amount" },
-          payment_method: payment_method
-        )
-        next
-      end
-
-      extracted = extract_for(user, text, ai)
-      amount_cents, description, kind, payment_method = resolve_amount_and_kind(text, extracted)
-
-      if amount_cents.nil?
-        user.draft_expenses.where(state: "awaiting_amount").delete_all
-        user.draft_expenses.create!(
-          raw_text: text,
-          extracted: { "description" => description, "kind" => kind, "payment_method" => payment_method },
-          state: "awaiting_amount"
-        )
-        bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd.")
-        next
-      end
-
-      save_or_confirm(
-        bot,
-        message.chat.id,
-        user,
-        amount_cents: amount_cents,
-        description: description,
-        kind: kind,
-        extracted: extracted,
-        raw_text: text,
-        metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind, payment_method: payment_method } },
-        payment_method: payment_method
-      )
+      handle_natural_text(bot, message.chat.id, user, text, ai)
     end
   rescue StandardError => e
     bot.api.send_message(chat_id: message.chat.id, text: "Error: #{e.class} - #{e.message}") rescue nil

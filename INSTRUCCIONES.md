@@ -64,6 +64,7 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | `/dolar` | Compra/venta oficial Banco Nación |
 | `/perfil` | Rubro y configuración |
 | Foto de comprobante | Si hay Tesseract, lee el texto; si no, te pide el monto |
+| Nota de voz | Transcribe en español (Whisper) y sigue el mismo flujo que el texto |
 
 
 ---
@@ -113,6 +114,7 @@ systemctl --user start ollama
 
 - El monto se parsea de forma fija (`8500`, `23.000`, `23k`, `8 usd`). La IA (Ollama 3B) ayuda sobre todo a **categorizar**.
 - Si decís cómo pagaste (`por transferencia de mercadopago`, `en efectivo`, `con débito`), se guarda el **medio de pago**. “Pagué por transferencia” es gasto; “transferencia de gime” sigue siendo ingreso.
+- Las **notas de voz** se transcriben en la VM (Whisper `base`, español) y después se tratan como texto. Máx. 45 s.
 - Los montos se muestran también en **USD oficial Banco Nación** (venta). Si un gasto conocido (comida, suscripciones, etc.) queda muy por encima de lo habitual, el bot **pregunta antes de guardar**.
 - Zona horaria: `Buenos Aires` (los meses se cortan con esa zona).
 - Para ver todo en tabla: abrí la web en `http://localhost:3000`.
