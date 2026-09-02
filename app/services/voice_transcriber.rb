@@ -66,7 +66,8 @@ class VoiceTranscriber
     end
 
     txt = Pathname.new("#{out_base}.txt")
-    text = File.file?(txt) ? File.read(txt).to_s : ""
+    text = File.file?(txt) ? File.read(txt, encoding: "UTF-8").to_s : ""
+    text = text.encode("UTF-8", invalid: :replace, undef: :replace)
     text = clean(text)
     return text if text.present?
 

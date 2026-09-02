@@ -19,7 +19,7 @@ class ExpenseClassifier
   private
 
   def classify_expense(desc)
-    d = desc.downcase
+    d = desc.to_s.downcase
     rules = [
       [/regalo|maestro|cumple|navidad/, ["Regalos", nil]],
       [/hamburg|pizza|comida|para\s+comer|\bcomer\b|caf[eé]|super(mercado)?|men[uú]|kiosko|gaseosa|coca|almuerzo|cena|desayuno|milanesa|pollo/, ["Comida", nil]],
@@ -42,7 +42,7 @@ class ExpenseClassifier
   end
 
   def classify_income(desc)
-    d = desc.downcase
+    d = desc.to_s.downcase
     rules = [
       [/pilates|sistema|servicio|freelance|trabajo|cliente|honorario/, ["Trabajo", nil]],
       [/transfer|gime|dep[oó]sit/, ["Transferencias", nil]],

@@ -82,7 +82,8 @@ def kind_label(kind)
 end
 
 def command_name(text)
-  text.to_s.split(/\s+/, 2).first.to_s.sub(%r{\A/}, "").split("@", 2).first.downcase
+  token = text.to_s.strip.split(/\s+/, 2).first
+  token.to_s.sub(%r{\A/}, "").split("@", 2).first.to_s.downcase
 end
 
 def btn(label)
@@ -435,12 +436,30 @@ def handle_confirmation(bot, chat_id, user, text)
   :handled
 end
 
-def download_telegram_file(token, file_path, message_id)
+def telegram_file_path(bot, file_id)
+  return nil if file_id.to_s.blank?
+
+  file = bot.api.get_file(file_id: file_id)
+  path =
+    if file.respond_to?(:file_path)
+      file.file_path
+    elsif file.is_a?(Hash)
+      file[:file_path] || file["file_path"]
+    end
+  path.to_s.presence
+rescue StandardError => e
+  warn("[telegram_file_path] #{e.class}: #{e.message}\n#{e.backtrace&.first(6)&.join("\n")}")
+  nil
+end
+
+def download_telegram_file(token, file_path, message_id, default_ext: ".jpg")
+  return nil if file_path.to_s.blank?
+
   url = "https://api.telegram.org/file/bot#{token}/#{file_path}"
   dir = Rails.root.join("tmp/receipts")
   FileUtils.mkdir_p(dir)
   ext = File.extname(file_path.to_s)
-  ext = ".jpg" if ext.blank?
+  ext = default_ext if ext.blank?
   dest = dir.join("#{message_id}#{ext}")
   res = HTTPX.with(timeout: { connect_timeout: 10, read_timeout: 30 }).get(url.to_s)
   return nil if res.is_a?(HTTPX::ErrorResponse) || res.status.to_i != 200
@@ -519,6 +538,15 @@ def handle_natural_text(bot, chat_id, user, text, ai, metadata: {})
   )
 end
 
+def voice_download_ext(media)
+  mime = media.respond_to?(:mime_type) ? media.mime_type.to_s.downcase : ""
+  return ".mp3" if mime.include?("mpeg") || mime.include?("mp3")
+  return ".m4a" if mime.include?("mp4") || mime.include?("m4a")
+  return ".wav" if mime.include?("wav")
+
+  ".ogg"
+end
+
 def handle_voice(bot, token, message, user, ai)
   media = message.voice || message.audio
   return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer el audio.") unless media
@@ -541,15 +569,28 @@ def handle_voice(bot, token, message, user, ai)
   end
 
   bot.api.send_message(chat_id: message.chat.id, text: "🎧 Escuchando...")
-  file = bot.api.get_file(file_id: media.file_id)
-  path = download_telegram_file(token, file.file_path, "voice-#{message.message_id}")
+  file_id = media.respond_to?(:file_id) ? media.file_id : nil
+  file_path = telegram_file_path(bot, file_id)
+  path = download_telegram_file(
+    token,
+    file_path,
+    "voice-#{message.message_id}",
+    default_ext: voice_download_ext(media)
+  )
   unless path
     bot.api.send_message(chat_id: message.chat.id, text: "No pude descargar el audio. Probá de nuevo.")
     return
   end
 
-  text = VoiceTranscriber.transcribe(path)
-  FileUtils.rm_f(path)
+  text =
+    begin
+      VoiceTranscriber.transcribe(path).to_s.encode("UTF-8", invalid: :replace, undef: :replace).strip
+    rescue StandardError => e
+      warn("[handle_voice] transcribe #{e.class}: #{e.message}\n#{e.backtrace&.first(6)&.join("\n")}")
+      ""
+    ensure
+      FileUtils.rm_f(path)
+    end
   if text.blank?
     bot.api.send_message(chat_id: message.chat.id, text: "No pude entender el audio. Probá de nuevo o escribilo.")
     return
@@ -563,8 +604,8 @@ def handle_photo(bot, token, message, user, ai)
   photo = Array(message.photo).max_by { |p| p.file_size.to_i }
   return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer la foto.") unless photo
 
-  file = bot.api.get_file(file_id: photo.file_id)
-  path = download_telegram_file(token, file.file_path, message.message_id)
+  file_path = telegram_file_path(bot, photo.file_id)
+  path = download_telegram_file(token, file_path, message.message_id)
   unless path
     bot.api.send_message(chat_id: message.chat.id, text: "No pude descargar la foto. Probá de nuevo.")
     return
@@ -637,13 +678,14 @@ Telegram::Bot::Client.run(token) do |bot|
   bot.listen do |message|
     case message
     when Telegram::Bot::Types::Message
-      next if message.text.blank? && message.contact.blank? && message.photo.blank? && message.voice.blank? && message.audio.blank?
+      voice_media = message.voice || message.audio
+      next if message.text.to_s.strip.empty? && message.contact.nil? && Array(message.photo).empty? && voice_media.nil?
 
       user = ensure_user(message)
       text = message.text.to_s.strip
       cmd = command_name(text)
 
-      if (message.voice.present? || message.audio.present?) && !user.needs_onboarding?
+      if voice_media && !user.needs_onboarding?
         handle_voice(bot, token, message, user, ai)
         next
       end
@@ -773,6 +815,8 @@ Telegram::Bot::Client.run(token) do |bot|
       handle_natural_text(bot, message.chat.id, user, text, ai)
     end
   rescue StandardError => e
-    bot.api.send_message(chat_id: message.chat.id, text: "Error: #{e.class} - #{e.message}") rescue nil
+    warn("[telegram_bot] #{e.class}: #{e.message}\n#{e.backtrace&.first(8)&.join("\n")}")
+    chat_id = message.respond_to?(:chat) ? message.chat&.id : nil
+    bot.api.send_message(chat_id: chat_id, text: "No pude procesar eso. Probá de nuevo o escribilo.") if chat_id
   end
 end
