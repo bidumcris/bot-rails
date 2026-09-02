@@ -2,11 +2,18 @@
 
 class ExpenseAiExtractor
   Extraction = Struct.new(
-    :amount_cents, :description, :category, :subcategory, :confidence, :provider, :model,
+    :amount_cents, :description, :category, :subcategory, :confidence, :provider, :model, :kind,
     keyword_init: true
   )
 
-  CATEGORIES = ["Comida", "Servicios", "Transporte", "Salud", "Compras", "Hogar", "Ocio", "Impuestos", "Suscripciones", "Otros"].freeze
+  EXPENSE_CATEGORIES = [
+    "Comida", "Servicios", "Transporte", "Salud", "Compras", "Hogar",
+    "Ocio", "Impuestos", "Suscripciones", "Regalos", "Otros"
+  ].freeze
+
+  INCOME_CATEGORIES = [
+    "Trabajo", "Transferencias", "Ventas", "Otros ingresos"
+  ].freeze
 
   def initialize(provider: ENV["LLM_PROVIDER"].presence || "ollama")
     @provider = provider
@@ -23,29 +30,30 @@ class ExpenseAiExtractor
     end
   end
 
-  # Extrae un gasto desde texto libre.
-  # Devuelve amount_cents como Integer o nil si no encontró monto.
   def extract(text, currency: "ARS")
     raw = text.to_s.strip
+    kind_guess = ExpenseTextParser.detect_kind(raw)
     blank = Extraction.new(
       amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name
+      confidence: 0.0, provider: @provider, model: model_name, kind: kind_guess
     )
     return blank if raw.blank?
     return blank unless enabled?
 
     data =
       case @provider
-      when "ollama"
-        extract_with_ollama(raw)
-      when "openai"
-        extract_with_openai(raw)
+      when "ollama" then extract_with_ollama(raw)
+      when "openai" then extract_with_openai(raw)
       end
 
     return blank if data.nil?
 
+    kind = data["kind"].to_s
+    kind = kind_guess unless %w[expense income].include?(kind)
+
+    categories = kind == "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
     category = data["category"].to_s
-    category = "Otros" unless CATEGORIES.include?(category)
+    category = (kind == "income" ? "Otros ingresos" : "Otros") unless categories.include?(category)
 
     amount_cents = data["amount_cents"]
     amount_cents = amount_cents.to_i if amount_cents.is_a?(Numeric) || amount_cents.to_s.match?(/\A\d+\z/)
@@ -61,12 +69,13 @@ class ExpenseAiExtractor
       subcategory: data["subcategory"].presence,
       confidence: data["confidence"].to_f.clamp(0.0, 1.0),
       provider: @provider,
-      model: model_name
+      model: model_name,
+      kind: kind
     )
   rescue StandardError
     Extraction.new(
       amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name
+      confidence: 0.0, provider: @provider, model: model_name, kind: ExpenseTextParser.detect_kind(raw)
     )
   end
 
@@ -87,26 +96,30 @@ class ExpenseAiExtractor
 
   def system_prompt
     <<~SYS.strip
-      Sos un asistente que interpreta gastos personales en Argentina.
-      Respondé SOLO JSON válido. Moneda: ARS. Si no hay monto, poné amount_cents = null.
+      Sos un asistente de finanzas personales en Argentina.
+      Respondé SOLO JSON válido. Moneda ARS.
+      Distinguí gasto (expense) vs ingreso (income).
+      Cobros, transferencias recibidas, depósitos = income.
+      Pagos, compras, regalos que vos diste = expense.
     SYS
   end
 
   def user_prompt(raw)
     <<~TEXT
-      Extraé un gasto desde el texto y devolvé JSON con:
-      - amount_cents: integer (ARS * 100) o null
-      - description: string (descripción normalizada sin el monto, SIN dígitos y sin palabras de moneda como "pesos"/"ARS")
-      - category: una de #{CATEGORIES}
+      Interpretá el mensaje y devolvé JSON con:
+      - kind: "expense" o "income"
+      - amount_cents: integer (ARS * 100) o null. Si dice "2 menús 9000 cada uno" => 1800000
+      - description: string corta sin monto ni moneda
+      - category: si kind=expense una de #{EXPENSE_CATEGORIES}; si kind=income una de #{INCOME_CATEGORIES}
       - subcategory: string o null
-      - confidence: número 0..1
+      - confidence: 0..1
 
-      Reglas:
-      - "23k", "23 mil", "23.000" => 23000 ARS => amount_cents 2300000
-      - "Futbol 4500 pesos" => amount_cents: 450000, description: "Futbol"
-      - No inventes números. Si no hay monto, amount_cents debe ser null.
-      - Si hay fecha tipo "ayer", ignorala (no la necesitamos ahora).
-      - Si el texto es ambiguo, elegí category = "Otros" y confidence baja.
+      Ejemplos:
+      - "Cobro 84150 por servicio pilates" => income, Trabajo, 8415000
+      - "Transferencia 21mil de gime a mi" => income, Transferencias, 2100000
+      - "Pago regalo día del maestro 10000" => expense, Regalos, 1000000
+      - "Compra 2 menús 9000 cada uno" => expense, Comida, 1800000
+      - "6000 milanesas de pollo" => expense, Comida, 600000
 
       Texto: "#{raw}"
     TEXT

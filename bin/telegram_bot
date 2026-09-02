@@ -5,30 +5,26 @@ require_relative "../config/environment"
 require "telegram/bot"
 
 token_raw = ENV["TELEGRAM_BOT_TOKEN"].to_s
-# Acepta tanto el token puro como strings donde el usuario pegó "HTTP API:\n<token>"
 token = token_raw.strip[/\d+:[A-Za-z0-9_-]+/]
 abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.blank?
 
 HELP_TEXT = <<~TXT.strip
-  🧾 Bot de gastos (ARS)
+  🧾 Bot de gastos e ingresos (ARS)
 
   Registrar:
   • hamburguesa 8500
-  • pago luz 23000
-  • kiosko gaseosa 2500
+  • cobro 84150 servicio pilates
+  • transferencia 21mil de gime
+  • 2 menús 9000 cada uno
   (si no ponés monto, te lo pregunto)
 
   Consultar mes:
-  • /resumen → mes actual
-  • /septiembre → septiembre de este año
-  • /mes septiembre
+  • /resumen → mes actual (ingresos, gastos, balance)
+  • /septiembre
   • /mes septiembre 2025
-  • /mes 9
-  • /mes 2025-09
 
   Otros:
-  • /ultimos → últimos 10 gastos
-  • /phone → asociar teléfono
+  • /ultimos → últimos 10 movimientos
   • /help → esta ayuda
 TXT
 
@@ -45,6 +41,35 @@ end
 def format_ars(amount_cents)
   pesos = amount_cents.to_i / 100.0
   format("$%.2f ARS", pesos)
+end
+
+def kind_label(kind)
+  kind.to_s == "income" ? "Ingreso" : "Gasto"
+end
+
+def resolve_amount_and_kind(text, extracted)
+  amount_cents, description, kind = ExpenseTextParser.parse(text)
+  kind = extracted.kind if extracted&.kind.present?
+
+  # Si el texto tiene "cada uno" y la IA devolvió monto, preferimos ese (ej. 2 x 9000).
+  if text.match?(/cada\s+(uno|una)\b/i) && extracted&.amount_cents.to_i.positive?
+    amount_cents = extracted.amount_cents
+  end
+
+  description = extracted.description if extracted&.description.present? && description.blank?
+  [amount_cents, description, kind]
+end
+
+def classify_entry(description, kind, extracted)
+  if extracted&.category.present?
+    ExpenseClassifier::Category.new(
+      category: extracted.category,
+      subcategory: extracted.subcategory,
+      confidence: extracted.confidence
+    )
+  else
+    ExpenseClassifier.new.classify(description, kind: kind)
+  end
 end
 
 def send_month_summary(bot, chat_id, user, query_text)
@@ -68,14 +93,15 @@ end
 def send_recent(bot, chat_id, user, limit: 10)
   expenses = user.expenses.order(spent_at: :desc).limit(limit)
   if expenses.empty?
-    bot.api.send_message(chat_id: chat_id, text: "Todavía no tenés gastos registrados.")
+    bot.api.send_message(chat_id: chat_id, text: "Todavía no tenés movimientos registrados.")
     return
   end
 
-  lines = ["🧾 Últimos #{expenses.size} gastos:"]
+  lines = ["🧾 Últimos #{expenses.size} movimientos:"]
   expenses.each do |e|
     day = e.spent_at.in_time_zone.strftime("%d/%m")
-    lines << "• #{day} #{format_ars(e.amount_cents)} — #{e.category} — #{e.description}"
+    sign = e.income? ? "+" : "-"
+    lines << "• #{day} #{sign}#{format_ars(e.amount_cents)} — #{kind_label(e.kind)}/#{e.category} — #{e.description}"
   end
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
 end
@@ -105,7 +131,6 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      # /resumen, /mes ..., /septiembre, /enero 2025, etc.
       cmd = text.split(/\s+/, 2).first.to_s
       bare = cmd.sub(%r{\A/}, "").split("@", 2).first
       if %w[resumen mes].include?(bare) || ExpenseMonthSummary::MONTHS.key?(bare)
@@ -125,7 +150,6 @@ Telegram::Bot::Client.run(token) do |bot|
       end
 
       if message.contact
-        # Seguridad: aceptar solo el contacto propio (cuando Telegram provee user_id).
         if message.contact.user_id.present? && message.contact.user_id.to_s != message.from&.id&.to_s
           bot.api.send_message(chat_id: message.chat.id, text: "Por seguridad, solo puedo guardar tu propio contacto.")
           next
@@ -138,29 +162,24 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      # Si es un comando desconocido, no lo registremos como gasto.
       if text.start_with?("/")
         bot.api.send_message(chat_id: message.chat.id, text: "Comando desconocido.\n\n#{HELP_TEXT}")
         next
       end
 
-      # Si hay un borrador esperando monto, aceptar número como respuesta.
       draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
       if draft && text.match?(/\d/)
-        amount_cents, _ = ExpenseTextParser.parse(text, currency: user.currency)
+        amount_cents, _, kind_from_amount = ExpenseTextParser.parse(text, currency: user.currency)
         if amount_cents.nil?
           bot.api.send_message(chat_id: message.chat.id, text: "No entendí el monto. Probá: 8500 o 23.000,50")
           next
         end
 
         description = draft.extracted["description"].presence || draft.raw_text
+        kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
         extracted = ai.extract(description, currency: user.currency)
-        cat =
-          if extracted.category.present?
-            ExpenseClassifier::Category.new(category: extracted.category, subcategory: extracted.subcategory, confidence: extracted.confidence)
-          else
-            ExpenseClassifier.new.classify(description)
-          end
+        kind = extracted.kind if extracted.kind.present?
+        cat = classify_entry(description, kind, extracted)
 
         expense = user.expenses.create!(
           amount_cents: amount_cents,
@@ -168,6 +187,7 @@ Telegram::Bot::Client.run(token) do |bot|
           description: description,
           category: cat.category,
           subcategory: cat.subcategory,
+          kind: kind,
           raw_text: draft.raw_text,
           llm_provider: extracted.provider,
           llm_model: extracted.model,
@@ -178,45 +198,43 @@ Telegram::Bot::Client.run(token) do |bot|
         draft.destroy!
         bot.api.send_message(
           chat_id: message.chat.id,
-          text: "Registrado: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+          text: "#{kind_label(expense.kind)}: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
         )
         next
       end
 
-      # Primero intentamos interpretar con IA (si está configurada).
-      # El monto lo parseamos de forma determinística (evita errores de centavos del LLM).
-      amount_cents, description = ExpenseTextParser.parse(text, currency: user.currency)
       extracted = ai.extract(text, currency: user.currency)
+      amount_cents, description, kind = resolve_amount_and_kind(text, extracted)
 
       if amount_cents.nil?
-        user.draft_expenses.create!(raw_text: text, extracted: { "description" => description }, state: "awaiting_amount")
+        user.draft_expenses.create!(
+          raw_text: text,
+          extracted: { "description" => description, "kind" => kind },
+          state: "awaiting_amount"
+        )
         bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"?")
         next
       end
 
-      cat =
-        if extracted.category.present?
-          ExpenseClassifier::Category.new(category: extracted.category, subcategory: extracted.subcategory, confidence: extracted.confidence)
-        else
-          ExpenseClassifier.new.classify(description)
-        end
+      cat = classify_entry(description, kind, extracted)
       expense = user.expenses.create!(
         amount_cents: amount_cents,
         currency: user.currency,
         description: description,
         category: cat.category,
         subcategory: cat.subcategory,
+        kind: kind,
         spent_at: Time.zone.now,
         raw_text: text,
         llm_provider: extracted.provider,
         llm_model: extracted.model,
         llm_confidence: cat.confidence,
-        metadata: { flow: "direct", parser: { amount_cents: amount_cents } }
+        metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind } }
       )
 
       bot.api.send_message(
         chat_id: message.chat.id,
-        text: "Registrado: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+        text: "#{kind_label(expense.kind)}: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
       )
     end
   rescue StandardError => e

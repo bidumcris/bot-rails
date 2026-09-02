@@ -1,24 +1,42 @@
+# frozen_string_literal: true
+
 class ExpenseTextParser
-  # Devuelve [amount_cents, description]
-  # Soporta: "hamburguesa 8500", "$8.500 hamburguesa", "pagué luz 23.000,50"
+  # Devuelve [amount_cents, description, kind]
+  # kind: "expense" | "income"
   def self.parse(text, currency: "ARS")
     raw = text.to_s.strip
-    return [nil, raw] if raw.blank?
+    return [nil, raw, detect_kind(raw)] if raw.blank?
 
-    raw = expand_shorthand_amounts(raw)
+    kind = detect_kind(raw)
+    expanded = expand_shorthand_amounts(raw)
+
+    # "2 menús ... 9000 cada uno" => 2 * 9000
+    if (qty_match = expanded.match(/(\d+)\s+.{0,80}?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+)(?:\s*pesos?)?\s*cada\s+(?:uno|una)\b/i))
+      qty = qty_match[1].to_i
+      unit_cents = parse_to_cents(qty_match[2], currency: currency)
+      if qty.positive? && unit_cents
+        description = clean_description(expanded.sub(qty_match[0], " ").sub(/\b#{qty}\b/, " "))
+        return [qty * unit_cents, description.presence || raw, kind]
+      end
+    end
 
     # Busca el último número "grande" del mensaje (suele ser el monto)
-    # Formatos: 8500 | 8.500 | 8,500 | 23.000,50 | 23000.50
-    # Importante: el branch con miles exige al menos un separador ( + ) para no capturar solo los primeros 3 dígitos
-    # de números largos sin separadores (ej "4500" => no debe capturar "450").
-    number_tokens = raw.scan(/(?:\$|\b)(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\b)?/)
+    number_tokens = expanded.scan(/(?:\$|\b)(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?:\b)?/)
     token = number_tokens.flatten.last
 
     amount_cents = token ? parse_to_cents(token, currency: currency) : nil
-    description = token ? raw.sub(token, "") : raw
+    description = token ? expanded.sub(token, "") : expanded
     description = clean_description(description)
 
-    [amount_cents, description.presence || raw]
+    [amount_cents, description.presence || raw, kind]
+  end
+
+  def self.detect_kind(text)
+    t = text.to_s.downcase
+    income_re = /\b(cobr[eo]|cobré|ingreso|ingres[eé]|transferencia|me\s+transfer|deposit[oó]|me\s+deposit|recib[ií]|me\s+pagaron|pago\s+recibido|sueldo|honorarios?\s+cobrad)\b/i
+    # "pago X" suele ser gasto; "me pagaron" / "cobro" es ingreso
+    return "income" if t.match?(income_re)
+    "expense"
   end
 
   # Limpia palabras típicas de moneda y signos sueltos, para dejar una descripción usable.
@@ -26,6 +44,7 @@ class ExpenseTextParser
     s = text.to_s
     s = s.gsub("$", " ")
     s = s.gsub(/\b(pesos?|ars)\b/i, " ")
+    s = s.gsub(/\bcada\s+(uno|una)\b/i, " ")
     s = s.gsub(/\s+/, " ").strip
     s = s.gsub(/\A[-–—:;,]+\s*/, "").gsub(/\s*[-–—:;,]+\z/, "").strip
     s
@@ -51,7 +70,6 @@ class ExpenseTextParser
     thousand_sep = nil
 
     if s.include?(",") && s.include?(".")
-      # El último separador suele ser decimal; el otro miles
       if s.rindex(",") > s.rindex(".")
         decimal_sep = ","
         thousand_sep = "."
@@ -97,5 +115,3 @@ class ExpenseTextParser
     (int_digits.to_i * 100) + decimals.to_i
   end
 end
-
-

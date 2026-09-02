@@ -8,13 +8,17 @@ class ExpenseMonthSummary
     "noviembre" => 11, "diciembre" => 12
   }.freeze
 
-  Result = Struct.new(:range_start, :range_end, :label, :total_cents, :count, :by_category, keyword_init: true)
+  Result = Struct.new(
+    :range_start, :range_end, :label,
+    :expense_total_cents, :income_total_cents, :expense_count, :income_count,
+    :expenses_by_category, :incomes_by_category,
+    keyword_init: true
+  )
 
   def self.parse_month_query(text, now: Time.zone.now)
     t = text.to_s.strip.downcase
     t = t.sub(%r{\A/}, "")
 
-    # /septiembre, /mes septiembre, /mes 9, /mes 2026-09, /resumen
     if t.match?(/\A(resumen|mes)\z/)
       return [now.beginning_of_month.to_date, now.end_of_month.to_date]
     end
@@ -39,7 +43,6 @@ class ExpenseMonthSummary
       return [d, d.end_of_month]
     end
 
-    # /septiembre or /septiembre 2025
     if (m = t.match(/\A([a-záéíóúñ]+)\s*(\d{4})?\z/))
       mo = MONTHS[m[1]]
       return nil unless mo
@@ -55,32 +58,48 @@ class ExpenseMonthSummary
 
   def self.for_user(user, from:, to:)
     scope = user.expenses.where(spent_at: from.beginning_of_day..to.end_of_day)
-    by_cat = scope.group(:category).sum(:amount_cents).sort_by { |_, cents| -cents }
+    expenses = scope.expenses_only
+    incomes = scope.incomes_only
     month_name = MONTHS.key(from.month)&.capitalize || from.strftime("%m")
+
     Result.new(
       range_start: from,
       range_end: to,
       label: "#{month_name} #{from.year}",
-      total_cents: scope.sum(:amount_cents),
-      count: scope.count,
-      by_category: by_cat
+      expense_total_cents: expenses.sum(:amount_cents),
+      income_total_cents: incomes.sum(:amount_cents),
+      expense_count: expenses.count,
+      income_count: incomes.count,
+      expenses_by_category: expenses.group(:category).sum(:amount_cents).sort_by { |_, c| -c },
+      incomes_by_category: incomes.group(:category).sum(:amount_cents).sort_by { |_, c| -c }
     )
   end
 
   def self.format_message(result, format_ars:)
+    balance = result.income_total_cents - result.expense_total_cents
     lines = []
     lines << "📅 #{result.label}"
-    lines << "Gastos: #{result.count} — Total: #{format_ars.call(result.total_cents)}"
-    if result.by_category.any?
+    lines << "Ingresos: #{result.income_count} — #{format_ars.call(result.income_total_cents)}"
+    lines << "Gastos: #{result.expense_count} — #{format_ars.call(result.expense_total_cents)}"
+    lines << "Balance: #{format_ars.call(balance)}"
+
+    if result.incomes_by_category.any?
       lines << ""
-      lines << "Por categoría:"
-      result.by_category.each do |cat, cents|
-        lines << "• #{cat}: #{format_ars.call(cents)}"
-      end
-    else
-      lines << ""
-      lines << "No hay gastos en este período."
+      lines << "Ingresos por categoría:"
+      result.incomes_by_category.each { |cat, cents| lines << "• #{cat}: #{format_ars.call(cents)}" }
     end
+
+    if result.expenses_by_category.any?
+      lines << ""
+      lines << "Gastos por categoría:"
+      result.expenses_by_category.each { |cat, cents| lines << "• #{cat}: #{format_ars.call(cents)}" }
+    end
+
+    if result.income_count.zero? && result.expense_count.zero?
+      lines << ""
+      lines << "No hay movimientos en este período."
+    end
+
     lines.join("\n")
   end
 end

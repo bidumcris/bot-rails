@@ -8,6 +8,7 @@
   <thead>
     <tr>
       <th>Fecha</th>
+      <th>Tipo</th>
       <th>Monto</th>
       <th>Categoría</th>
       <th>Descripción</th>
@@ -18,6 +19,7 @@
     <% @expenses.each do |e| %>
       <tr>
         <td><%= e.spent_at&.in_time_zone(e.user&.time_zone || "America/Argentina/Buenos_Aires")&.strftime("%Y-%m-%d %H:%M") %></td>
+        <td><%= e.income? ? "Ingreso" : "Gasto" %></td>
         <td><%= number_to_currency(e.amount_ars, unit: "$", separator: ",", delimiter: ".", format: "%u%n") %> <%= e.currency %></td>
         <td><%= [e.category, e.subcategory].compact.join(" / ") %></td>
         <td><%= e.description.presence || e.raw_text %></td>
