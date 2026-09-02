@@ -2,7 +2,7 @@
 
 class ExpenseAiExtractor
   Extraction = Struct.new(
-    :amount_cents, :description, :category, :subcategory, :confidence, :provider, :model, :kind,
+    :amount_cents, :description, :category, :subcategory, :confidence, :provider, :model, :kind, :payment_method,
     keyword_init: true
   )
 
@@ -33,9 +33,11 @@ class ExpenseAiExtractor
   def extract(text, currency: "ARS", occupation: nil)
     raw = text.to_s.strip
     kind_guess = ExpenseTextParser.detect_kind(raw)
+    payment_guess = PaymentMethodDetector.detect(raw)
     blank = Extraction.new(
       amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name, kind: kind_guess
+      confidence: 0.0, provider: @provider, model: model_name, kind: kind_guess,
+      payment_method: payment_guess
     )
     return blank if raw.blank?
     return blank unless enabled?
@@ -50,6 +52,9 @@ class ExpenseAiExtractor
 
     kind = data["kind"].to_s
     kind = kind_guess unless %w[expense income].include?(kind)
+    if PaymentMethodDetector.outflow?(raw) && !ExpenseTextParser.strong_income?(raw)
+      kind = "expense"
+    end
 
     categories = kind == "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
     category = data["category"].to_s
@@ -61,6 +66,11 @@ class ExpenseAiExtractor
 
     desc = data["description"].to_s.strip
     desc = raw if desc.blank?
+    desc = PaymentMethodDetector.strip(desc)
+
+    payment = data["payment_method"].to_s.strip
+    payment = payment_guess unless PaymentMethodDetector::LABELS.include?(payment)
+    payment ||= payment_guess
 
     Extraction.new(
       amount_cents: amount_cents,
@@ -70,12 +80,14 @@ class ExpenseAiExtractor
       confidence: data["confidence"].to_f.clamp(0.0, 1.0),
       provider: @provider,
       model: model_name,
-      kind: kind
+      kind: kind,
+      payment_method: payment
     )
   rescue StandardError
     Extraction.new(
       amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name, kind: ExpenseTextParser.detect_kind(raw)
+      confidence: 0.0, provider: @provider, model: model_name, kind: ExpenseTextParser.detect_kind(raw),
+      payment_method: PaymentMethodDetector.detect(raw)
     )
   end
 
@@ -106,8 +118,9 @@ class ExpenseAiExtractor
       Sos un asistente de finanzas personales en Argentina.
       Respondé SOLO JSON válido. Moneda ARS.
       Distinguí gasto (expense) vs ingreso (income).
-      Cobros, transferencias recibidas, depósitos = income.
+      Cobros, transferencias RECIBIDAS, depósitos = income.
       Pagos, compras, regalos que vos diste = expense.
+      Si dice que PAGÓ por transferencia, Mercado Pago, tarjeta o efectivo, es expense. El medio de pago no lo convierte en ingreso.
       #{extra}
     SYS
   end
@@ -120,11 +133,14 @@ class ExpenseAiExtractor
       - description: string corta sin monto ni moneda
       - category: si kind=expense una de #{EXPENSE_CATEGORIES}; si kind=income una de #{INCOME_CATEGORIES}
       - subcategory: string o null
+      - payment_method: una de #{PaymentMethodDetector::LABELS} o null
       - confidence: 0..1
 
       Ejemplos:
-      - "Cobro 84150 por servicio pilates" => income, Trabajo, 8415000
-      - "Transferencia 21mil de gime a mi" => income, Transferencias, 2100000
+      - "Cobro 84150 por servicio pilates" => income, Trabajo, 8415000, payment_method null
+      - "Transferencia 21mil de gime a mi" => income, Transferencias, 2100000, payment_method Transferencia
+      - "amohadillas para comer 2500 por transferencia de mercadopago" => expense, Comida, 250000, payment_method Mercado Pago
+      - "hamburguesa 8500 en efectivo" => expense, Comida, 850000, payment_method Efectivo
       - "Pago regalo día del maestro 10000" => expense, Regalos, 1000000
       - "Compra 2 menús 9000 cada uno" => expense, Comida, 1800000
       - "6000 milanesas de pollo" => expense, Comida, 600000

@@ -5,15 +5,16 @@ class ExpenseTextParser
   # kind: "expense" | "income"
   def self.parse(text, currency: "ARS", usd_venta: nil)
     raw = text.to_s.strip
-    return [nil, raw, detect_kind(raw)] if raw.blank?
+    return [nil, raw, detect_kind(raw), nil] if raw.blank?
 
+    payment = PaymentMethodDetector.extract(raw)
     kind = detect_kind(raw)
     expanded = expand_shorthand_amounts(raw)
 
     if (usd = extract_usd_amount(expanded)) && usd_venta.to_f.positive?
       amount_cents = (usd * usd_venta.to_f * 100).round
-      description = clean_description(strip_usd_tokens(expanded))
-      return [amount_cents, description.presence || raw, kind]
+      description = finalize_description(strip_usd_tokens(expanded), raw)
+      return [amount_cents, description, kind, payment.method]
     end
 
     # "2 menús ... 9000 cada uno" => 2 * 9000
@@ -23,8 +24,8 @@ class ExpenseTextParser
       if qty.positive? && unit_cents
         description = expanded.sub(qty_match[2], " ")
         description = description.sub(/\bcada\s+(?:uno|una)\b/i, " ")
-        description = clean_description(description)
-        return [qty * unit_cents, description.presence || raw, kind]
+        description = finalize_description(description, raw)
+        return [qty * unit_cents, description, kind, payment.method]
       end
     end
 
@@ -34,17 +35,37 @@ class ExpenseTextParser
 
     amount_cents = token ? parse_to_cents(token, currency: currency) : nil
     description = token ? expanded.sub(token, "") : expanded
-    description = clean_description(description)
+    description = finalize_description(description, raw)
 
-    [amount_cents, description.presence || raw, kind]
+    [amount_cents, description, kind, payment.method]
   end
 
+  STRONG_INCOME = /
+    \b(
+      cobr[eo]|cobré|ingreso|ingres[eé]|
+      me\s+transfer|me\s+deposit|deposit[oó]|
+      recib[ií]|me\s+pagaron|pago\s+recibido|
+      sueldo|honorarios?\s+cobrad
+    )\b
+  /ix
+
+  BARE_TRANSFER_INCOME = /\btransferencia\b/i
+
   def self.detect_kind(text)
-    t = text.to_s.downcase
-    income_re = /\b(cobr[eo]|cobré|ingreso|ingres[eé]|transferencia|me\s+transfer|deposit[oó]|me\s+deposit|recib[ií]|me\s+pagaron|pago\s+recibido|sueldo|honorarios?\s+cobrad)\b/i
-    # "pago X" suele ser gasto; "me pagaron" / "cobro" es ingreso
-    return "income" if t.match?(income_re)
+    t = text.to_s
+    return "income" if t.match?(STRONG_INCOME)
+    return "expense" if PaymentMethodDetector.outflow?(t)
+    return "income" if t.match?(BARE_TRANSFER_INCOME)
     "expense"
+  end
+
+  def self.strong_income?(text)
+    text.to_s.match?(STRONG_INCOME)
+  end
+
+  def self.finalize_description(text, fallback)
+    description = clean_description(PaymentMethodDetector.strip(text.to_s))
+    description.presence || PaymentMethodDetector.strip(fallback).presence || fallback
   end
 
   # Limpia palabras típicas de moneda y signos sueltos, para dejar una descripción usable.

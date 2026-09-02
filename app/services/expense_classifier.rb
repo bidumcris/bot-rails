@@ -22,7 +22,7 @@ class ExpenseClassifier
     d = desc.downcase
     rules = [
       [/regalo|maestro|cumple|navidad/, ["Regalos", nil]],
-      [/hamburg|pizza|comida|men[uú]|kiosko|gaseosa|coca|almuerzo|cena|desayuno|milanesa|pollo/, ["Comida", nil]],
+      [/hamburg|pizza|comida|para\s+comer|\bcomer\b|caf[eé]|super(mercado)?|men[uú]|kiosko|gaseosa|coca|almuerzo|cena|desayuno|milanesa|pollo/, ["Comida", nil]],
       [/internet|wifi|fibra|movistar|personal|claro|telecentro/, ["Servicios", "Internet"]],
       [/luz|edenor|edesur|energia|epe/, ["Servicios", "Luz"]],
       [/gas\b|metrogas|naturgy/, ["Servicios", "Gas"]],

@@ -13,6 +13,7 @@ HELP_TEXT = <<~TXT.strip
 
   Registrar (texto o foto de comprobante):
   • hamburguesa 8500
+  • almohadillas 2500 por transferencia de mercadopago
   • netflix 8 usd
   • cobro 84150 servicio pilates
   • transferencia 21mil de gime
@@ -140,15 +141,24 @@ def send_dollar_rate(bot, chat_id)
 end
 
 def resolve_amount_and_kind(text, extracted)
-  amount_cents, description, kind = ExpenseTextParser.parse(text, usd_venta: BnaOfficialDollar.current&.venta)
-  kind = extracted.kind if extracted&.kind.present?
+  amount_cents, description, kind, payment_method = ExpenseTextParser.parse(
+    text,
+    usd_venta: BnaOfficialDollar.current&.venta
+  )
+  if PaymentMethodDetector.outflow?(text) && !ExpenseTextParser.strong_income?(text)
+    kind = "expense"
+  elsif extracted&.kind.present?
+    kind = extracted.kind
+  end
 
   if text.match?(/cada\s+(uno|una)\b/i) && extracted&.amount_cents.to_i.positive?
     amount_cents = extracted.amount_cents
   end
 
   description = extracted.description if extracted&.description.present? && description.blank?
-  [amount_cents, description, kind]
+  description = PaymentMethodDetector.strip(description.to_s) if description.present?
+  payment_method = extracted.payment_method if payment_method.blank? && extracted&.payment_method.present?
+  [amount_cents, description, kind, payment_method]
 end
 
 def classify_entry(description, kind, extracted)
@@ -198,7 +208,8 @@ def send_recent(bot, chat_id, user, limit: 10)
     sign = e.income? ? "+" : "-"
     usd = e.metadata.is_a?(Hash) ? e.metadata.dig("bna", "usd") || e.metadata.dig(:bna, :usd) : nil
     usd_txt = usd ? " (#{MoneyFormat.usd(usd.to_f)})" : ""
-    lines << "• #{day} #{sign}#{format_ars(e.amount_cents)}#{usd_txt} — #{kind_label(e.kind)}/#{e.category} — #{e.description}"
+    pay = e.payment_method.present? ? " · #{e.payment_method}" : ""
+    lines << "• #{day} #{sign}#{format_ars(e.amount_cents)}#{usd_txt} — #{kind_label(e.kind)}/#{e.category}#{pay} — #{e.description}"
   end
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
 end
@@ -207,8 +218,10 @@ def extract_for(user, text, ai)
   ai.extract(text, currency: user.currency, occupation: user.occupation)
 end
 
-def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:)
+def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, payment_method: nil)
   cat = classify_entry(description, kind, extracted)
+  method = payment_method.presence || extracted&.payment_method.presence
+  method = nil unless PaymentMethodDetector::LABELS.include?(method)
   user.expenses.create!(
     amount_cents: amount_cents,
     currency: user.currency,
@@ -216,6 +229,7 @@ def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_t
     category: cat.category,
     subcategory: cat.subcategory,
     kind: kind,
+    payment_method: method,
     spent_at: Time.zone.now,
     raw_text: raw_text,
     llm_provider: extracted&.provider,
@@ -243,7 +257,8 @@ end
 
 def saved_message(expense, prefix: nil)
   head = [prefix, kind_label(expense.kind)].compact.join(" ")
-  "#{head}: #{format_money(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+  pay = expense.payment_method.present? ? " · #{expense.payment_method}" : ""
+  "#{head}: #{format_money(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")}#{pay} — #{expense.description}"
 end
 
 def clear_open_drafts(user)
@@ -278,9 +293,10 @@ def suspicious_message(check, amount_cents, description, rate)
   lines.join("\n")
 end
 
-def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil)
+def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil, payment_method: nil)
   rate = BnaOfficialDollar.current
   cat = classify_entry(description, kind, extracted)
+  method = payment_method.presence || extracted&.payment_method
   check = AmountSanityChecker.check(
     amount_cents: amount_cents,
     description: description,
@@ -299,6 +315,7 @@ def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extr
         "amount_cents" => amount_cents,
         "description" => description,
         "kind" => kind,
+        "payment_method" => method,
         "category" => cat.category,
         "subcategory" => cat.subcategory,
         "confidence" => cat.confidence,
@@ -324,7 +341,8 @@ def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extr
     kind: kind,
     extracted: extracted,
     raw_text: raw_text,
-    metadata: metadata
+    metadata: metadata,
+    payment_method: method
   )
   bot.api.send_message(
     chat_id: chat_id,
@@ -364,7 +382,8 @@ def handle_confirmation(bot, chat_id, user, text)
     confidence: data["confidence"].to_f,
     provider: data["provider"],
     model: data["model"],
-    kind: data["kind"]
+    kind: data["kind"],
+    payment_method: data["payment_method"]
   )
   expense = persist_movement(
     user,
@@ -373,7 +392,8 @@ def handle_confirmation(bot, chat_id, user, text)
     kind: data["kind"],
     extracted: extracted,
     raw_text: draft.raw_text,
-    metadata: (data["metadata"] || {}).merge("confirmed" => true)
+    metadata: (data["metadata"] || {}).merge("confirmed" => true),
+    payment_method: data["payment_method"]
   )
   draft.destroy!
   bot.api.send_message(
@@ -437,12 +457,12 @@ def handle_photo(bot, token, message, user, ai)
   end
 
   extracted = extract_for(user, combined, ai)
-  amount_cents, description, kind = resolve_amount_and_kind(combined, extracted)
+  amount_cents, description, kind, payment_method = resolve_amount_and_kind(combined, extracted)
 
   if amount_cents.nil?
     user.draft_expenses.create!(
       raw_text: combined,
-      extracted: { "description" => description, "kind" => kind, "source" => "photo_ocr" },
+      extracted: { "description" => description, "kind" => kind, "payment_method" => payment_method, "source" => "photo_ocr" },
       state: "awaiting_amount"
     )
     bot.api.send_message(
@@ -462,7 +482,8 @@ def handle_photo(bot, token, message, user, ai)
     extracted: extracted,
     raw_text: combined,
     metadata: { flow: "photo_ocr" },
-    prefix: "(foto)"
+    prefix: "(foto)",
+    payment_method: payment_method
   )
 end
 
@@ -605,7 +626,7 @@ Telegram::Bot::Client.run(token) do |bot|
 
       draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
       if draft && text.match?(/\d/)
-        amount_cents, _, kind_from_amount = ExpenseTextParser.parse(
+        amount_cents, _, kind_from_amount, payment_from_amount = ExpenseTextParser.parse(
           text,
           currency: user.currency,
           usd_venta: BnaOfficialDollar.current&.venta
@@ -618,8 +639,9 @@ Telegram::Bot::Client.run(token) do |bot|
         description = draft.extracted["description"].presence || draft.raw_text
         raw_text = draft.raw_text
         kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
+        payment_method = payment_from_amount.presence || draft.extracted["payment_method"]
         extracted = extract_for(user, description, ai)
-        kind = extracted.kind if extracted.kind.present?
+        kind = extracted.kind if extracted.kind.present? && !PaymentMethodDetector.outflow?(raw_text)
         draft.destroy!
         save_or_confirm(
           bot,
@@ -630,19 +652,20 @@ Telegram::Bot::Client.run(token) do |bot|
           kind: kind,
           extracted: extracted,
           raw_text: raw_text,
-          metadata: { flow: "draft_amount" }
+          metadata: { flow: "draft_amount" },
+          payment_method: payment_method
         )
         next
       end
 
       extracted = extract_for(user, text, ai)
-      amount_cents, description, kind = resolve_amount_and_kind(text, extracted)
+      amount_cents, description, kind, payment_method = resolve_amount_and_kind(text, extracted)
 
       if amount_cents.nil?
         user.draft_expenses.where(state: "awaiting_amount").delete_all
         user.draft_expenses.create!(
           raw_text: text,
-          extracted: { "description" => description, "kind" => kind },
+          extracted: { "description" => description, "kind" => kind, "payment_method" => payment_method },
           state: "awaiting_amount"
         )
         bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd.")
@@ -658,7 +681,8 @@ Telegram::Bot::Client.run(token) do |bot|
         kind: kind,
         extracted: extracted,
         raw_text: text,
-        metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind } }
+        metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind, payment_method: payment_method } },
+        payment_method: payment_method
       )
     end
   rescue StandardError => e

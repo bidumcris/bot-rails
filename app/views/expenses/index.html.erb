@@ -11,6 +11,7 @@
       <th>Tipo</th>
       <th>Monto</th>
       <th>Categoría</th>
+      <th>Pago</th>
       <th>Descripción</th>
       <th>Usuario</th>
     </tr>
@@ -22,6 +23,7 @@
         <td><%= e.income? ? "Ingreso" : "Gasto" %></td>
         <td><%= number_to_currency(e.amount_ars, unit: "$", separator: ",", delimiter: ".", format: "%u%n") %> <%= e.currency %></td>
         <td><%= [e.category, e.subcategory].compact.join(" / ") %></td>
+        <td><%= e.payment_method %></td>
         <td><%= e.description.presence || e.raw_text %></td>
         <td><%= e.user&.telegram_user_id %></td>
       </tr>

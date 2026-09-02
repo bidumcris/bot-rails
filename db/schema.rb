@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_191114) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_02_201500) do
   create_table "draft_expenses", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "error"
@@ -33,12 +33,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_191114) do
     t.string "llm_model"
     t.string "llm_provider"
     t.json "metadata"
+    t.string "payment_method"
     t.string "raw_text", null: false
     t.datetime "spent_at", null: false
     t.string "subcategory"
     t.datetime "updated_at", null: false
     t.integer "user_id", null: false
     t.index ["kind"], name: "index_expenses_on_kind"
+    t.index ["payment_method"], name: "index_expenses_on_payment_method"
     t.index ["user_id"], name: "index_expenses_on_user_id"
   end
 

@@ -11,7 +11,7 @@ class ExpenseMonthSummary
   Result = Struct.new(
     :range_start, :range_end, :label,
     :expense_total_cents, :income_total_cents, :expense_count, :income_count,
-    :expenses_by_category, :incomes_by_category,
+    :expenses_by_category, :incomes_by_category, :expenses_by_payment,
     keyword_init: true
   )
 
@@ -71,7 +71,8 @@ class ExpenseMonthSummary
       expense_count: expenses.count,
       income_count: incomes.count,
       expenses_by_category: expenses.group(:category).sum(:amount_cents).sort_by { |_, c| -c },
-      incomes_by_category: incomes.group(:category).sum(:amount_cents).sort_by { |_, c| -c }
+      incomes_by_category: incomes.group(:category).sum(:amount_cents).sort_by { |_, c| -c },
+      expenses_by_payment: expenses.where.not(payment_method: [nil, ""]).group(:payment_method).sum(:amount_cents).sort_by { |_, c| -c }
     )
   end
 
@@ -99,6 +100,12 @@ class ExpenseMonthSummary
       lines << ""
       lines << "Gastos por categoría:"
       result.expenses_by_category.each { |cat, cents| lines << "• #{cat}: #{format_ars.call(cents)}" }
+    end
+
+    if result.expenses_by_payment&.any?
+      lines << ""
+      lines << "Gastos por medio de pago:"
+      result.expenses_by_payment.each { |method, cents| lines << "• #{method}: #{format_ars.call(cents)}" }
     end
 
     if result.income_count.zero? && result.expense_count.zero?

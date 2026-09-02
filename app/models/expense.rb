@@ -11,6 +11,7 @@ class Expense < ApplicationRecord
   validates :spent_at, presence: true
   validates :category, presence: true
   validates :kind, inclusion: { in: KINDS }
+  validates :payment_method, inclusion: { in: PaymentMethodDetector::LABELS }, allow_nil: true
 
   scope :expenses_only, -> { where(kind: "expense") }
   scope :incomes_only, -> { where(kind: "income") }

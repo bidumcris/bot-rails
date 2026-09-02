@@ -44,6 +44,8 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | Ejemplo | Qué hace |
 |---------|----------|
 | `hamburguesa 8500` | **Gasto** Comida $8.500 (y el equivalente en USD oficial BNA) |
+| `almohadillas 2500 por transferencia de mercadopago` | **Gasto** Comida $2.500 · Mercado Pago |
+| `super 18000 en efectivo` | **Gasto** Comida $18.000 · Efectivo |
 | `netflix 8 usd` | **Gasto** Suscripciones, convierte 8 USD → ARS con venta BNA |
 | `hamburguesa 125000` | **Duda**: una hamburguesa a ~USD 80 no cierra; te pide confirmar o usar $12.500 |
 | `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84.150 |
@@ -110,6 +112,7 @@ systemctl --user start ollama
 ## Tips
 
 - El monto se parsea de forma fija (`8500`, `23.000`, `23k`, `8 usd`). La IA (Ollama 3B) ayuda sobre todo a **categorizar**.
+- Si decís cómo pagaste (`por transferencia de mercadopago`, `en efectivo`, `con débito`), se guarda el **medio de pago**. “Pagué por transferencia” es gasto; “transferencia de gime” sigue siendo ingreso.
 - Los montos se muestran también en **USD oficial Banco Nación** (venta). Si un gasto conocido (comida, suscripciones, etc.) queda muy por encima de lo habitual, el bot **pregunta antes de guardar**.
 - Zona horaria: `Buenos Aires` (los meses se cortan con esa zona).
 - Para ver todo en tabla: abrí la web en `http://localhost:3000`.
