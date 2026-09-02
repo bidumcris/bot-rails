@@ -30,43 +30,27 @@ bin/rails s
 
 ## Comandos en Telegram
 
-### Registrar un gasto
+### Registrar un gasto o ingreso
 
 Escribí en lenguaje natural (pesos ARS):
 
 | Ejemplo | Qué hace |
 |---------|----------|
-| `hamburguesa 8500` | Guarda gasto Comida $8500 |
-| `pago luz 23000` | Guarda gasto Servicios/Hogar $23000 |
-| `kiosko gaseosa` | Pregunta el monto y después lo guarda |
+| `hamburguesa 8500` | **Gasto** Comida $8500 |
+| `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84150 |
+| `transferencia 21mil de gime` | **Ingreso** Transferencias $21000 |
+| `2 menús 9000 cada uno` | **Gasto** Comida $18000 |
+| `pago regalo maestro 10000` | **Gasto** Regalos $10000 |
 
-### Ver el mes (lo que pediste)
+### Ver el mes
 
 | Comando | Resultado |
 |---------|-----------|
-| `/resumen` | Totales del **mes actual** |
-| `/septiembre` | Totales de **septiembre de este año** |
-| `/mes septiembre` | Igual que arriba |
-| `/mes septiembre 2025` | Septiembre de 2025 |
-| `/mes 9` | Mes 9 del año actual |
-| `/mes 2025-09` | Septiembre 2025 |
+| `/resumen` | Ingresos + gastos + **balance** del mes actual |
+| `/septiembre` | Idem para septiembre |
+| `/mes septiembre 2025` | Otro año |
+| `/ultimos` | Últimos 10 movimientos (+ ingreso / − gasto) |
 
-También sirven: `/enero`, `/febrero`, … `/diciembre`.
-
-El resumen muestra:
-
-- cantidad de gastos
-- total en ARS
-- desglose por categoría
-
-### Otros comandos
-
-| Comando | Qué hace |
-|---------|----------|
-| `/start` | Bienvenida + ayuda |
-| `/help` o `/ayuda` | Lista de comandos |
-| `/ultimos` | Últimos 10 gastos |
-| `/phone` | Asociar tu número (opcional) |
 
 ---
 
