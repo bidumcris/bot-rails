@@ -15,7 +15,9 @@ class ExpenseTextParser
       qty = qty_match[1].to_i
       unit_cents = parse_to_cents(qty_match[2], currency: currency)
       if qty.positive? && unit_cents
-        description = clean_description(expanded.sub(qty_match[0], " ").sub(/\b#{qty}\b/, " "))
+        description = expanded.sub(qty_match[2], " ")
+        description = description.sub(/\bcada\s+(?:uno|una)\b/i, " ")
+        description = clean_description(description)
         return [qty * unit_cents, description.presence || raw, kind]
       end
     end
