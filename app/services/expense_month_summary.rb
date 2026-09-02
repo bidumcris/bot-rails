@@ -18,6 +18,8 @@ class ExpenseMonthSummary
   def self.parse_month_query(text, now: Time.zone.now)
     t = text.to_s.strip.downcase
     t = t.sub(%r{\A/}, "")
+    t = t.sub(/\A(reporte|pdf|exportar)\b/, "mes")
+    t = t.strip
 
     if t.match?(/\A(resumen|mes)\z/)
       return [now.beginning_of_month.to_date, now.end_of_month.to_date]

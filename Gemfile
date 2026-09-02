@@ -19,6 +19,11 @@ gem "stimulus-rails"
 gem "telegram-bot-ruby"
 gem "httpx"
 
+# Reportes PDF
+gem "prawn"
+gem "prawn-table"
+gem "matrix"
+
 # Local env vars convenience (también en producción si usás `.env`)
 gem "dotenv-rails"
 

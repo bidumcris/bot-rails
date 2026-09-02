@@ -3,6 +3,7 @@
 
 require_relative "../config/environment"
 require "telegram/bot"
+require "faraday/multipart"
 
 token_raw = ENV["TELEGRAM_BOT_TOKEN"].to_s
 token = token_raw.strip[/\d+:[A-Za-z0-9_-]+/]
@@ -24,6 +25,7 @@ HELP_TEXT = <<~TXT.strip
 
   Consultas:
   • /resumen — mes actual (ingresos, gastos, balance)
+  • /reporte — PDF del mes (también /reporte septiembre)
   • /septiembre — un mes
   • /movimientos — últimos 10
   • /dolar — cotización oficial Banco Nación
@@ -39,6 +41,7 @@ SPANISH_COMMANDS = [
   Telegram::Bot::Types::BotCommand.new(command: "inicio", description: "Empezar y configurar perfil"),
   Telegram::Bot::Types::BotCommand.new(command: "ayuda", description: "Ver comandos"),
   Telegram::Bot::Types::BotCommand.new(command: "resumen", description: "Resumen del mes actual"),
+  Telegram::Bot::Types::BotCommand.new(command: "reporte", description: "PDF del mes actual"),
   Telegram::Bot::Types::BotCommand.new(command: "movimientos", description: "Últimos 10 movimientos"),
   Telegram::Bot::Types::BotCommand.new(command: "perfil", description: "Ver tu perfil"),
   Telegram::Bot::Types::BotCommand.new(command: "trabajo", description: "Cambiar a qué te dedicás"),
@@ -172,6 +175,30 @@ def classify_entry(description, kind, extracted)
   else
     ExpenseClassifier.new.classify(description, kind: kind)
   end
+end
+
+def send_pdf_report(bot, chat_id, user, query_text)
+  range = ExpenseMonthSummary.parse_month_query(query_text)
+  if range.nil?
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: "No entendí el mes. Probá: /reporte  /reporte septiembre  /reporte septiembre 2025"
+    )
+    return
+  end
+
+  from, to = range
+  bot.api.send_message(chat_id: chat_id, text: "📄 Armando el PDF...")
+  path = ExpensePdfReport.build(user, from: from, to: to)
+  month_name = ExpenseMonthSummary::MONTHS.key(from.month)&.capitalize || from.strftime("%m")
+  file = Faraday::Multipart::FilePart.new(path.to_s, "application/pdf", "reporte-#{month_name.downcase}-#{from.year}.pdf")
+  bot.api.send_document(
+    chat_id: chat_id,
+    document: file,
+    caption: "📄 Reporte #{month_name} #{from.year} (ARS + dólar oficial BNA)"
+  )
+ensure
+  FileUtils.rm_f(path) if defined?(path) && path
 end
 
 def send_month_summary(bot, chat_id, user, query_text)
@@ -696,6 +723,11 @@ Telegram::Bot::Client.run(token) do |bot|
           last.destroy!
           bot.api.send_message(chat_id: message.chat.id, text: "Borré el último movimiento: #{summary}")
         end
+        next
+      end
+
+      if %w[reporte pdf exportar].include?(cmd)
+        send_pdf_report(bot, message.chat.id, user, text)
         next
       end
 

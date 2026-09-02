@@ -30,7 +30,7 @@ bin/rails s
 
 ## Comandos en Telegram
 
-Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/movimientos` `/dolar` `/perfil` `/trabajo` `/borrarultimo`
+Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/reporte` `/movimientos` `/dolar` `/perfil` `/trabajo` `/borrarultimo`
 
 ### Al empezar
 
@@ -58,6 +58,7 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | Comando | Resultado |
 |---------|-----------|
 | `/resumen` | Ingresos + gastos + **balance** del mes actual |
+| `/reporte` | **PDF** del mes (también `/reporte septiembre`) |
 | `/septiembre` | Idem para septiembre |
 | `/mes septiembre 2025` | Otro año |
 | `/movimientos` | Últimos 10 movimientos (+ ingreso / − gasto) |
