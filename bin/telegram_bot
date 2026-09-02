@@ -9,6 +9,29 @@ token_raw = ENV["TELEGRAM_BOT_TOKEN"].to_s
 token = token_raw.strip[/\d+:[A-Za-z0-9_-]+/]
 abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.blank?
 
+HELP_TEXT = <<~TXT.strip
+  🧾 Bot de gastos (ARS)
+
+  Registrar:
+  • hamburguesa 8500
+  • pago luz 23000
+  • kiosko gaseosa 2500
+  (si no ponés monto, te lo pregunto)
+
+  Consultar mes:
+  • /resumen → mes actual
+  • /septiembre → septiembre de este año
+  • /mes septiembre
+  • /mes septiembre 2025
+  • /mes 9
+  • /mes 2025-09
+
+  Otros:
+  • /ultimos → últimos 10 gastos
+  • /phone → asociar teléfono
+  • /help → esta ayuda
+TXT
+
 def ensure_user(message)
   telegram_user_id = message.from&.id&.to_s
   chat_id = message.chat&.id&.to_s
@@ -24,6 +47,39 @@ def format_ars(amount_cents)
   format("$%.2f ARS", pesos)
 end
 
+def send_month_summary(bot, chat_id, user, query_text)
+  range = ExpenseMonthSummary.parse_month_query(query_text)
+  if range.nil?
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: "No entendí el mes. Probá: /septiembre  /mes septiembre  /mes 9  /resumen"
+    )
+    return
+  end
+
+  from, to = range
+  result = ExpenseMonthSummary.for_user(user, from: from, to: to)
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: ExpenseMonthSummary.format_message(result, format_ars: method(:format_ars))
+  )
+end
+
+def send_recent(bot, chat_id, user, limit: 10)
+  expenses = user.expenses.order(spent_at: :desc).limit(limit)
+  if expenses.empty?
+    bot.api.send_message(chat_id: chat_id, text: "Todavía no tenés gastos registrados.")
+    return
+  end
+
+  lines = ["🧾 Últimos #{expenses.size} gastos:"]
+  expenses.each do |e|
+    day = e.spent_at.in_time_zone.strftime("%d/%m")
+    lines << "• #{day} #{format_ars(e.amount_cents)} — #{e.category} — #{e.description}"
+  end
+  bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
+end
+
 Telegram::Bot::Client.run(token) do |bot|
   ai = ExpenseAiExtractor.new
   bot.listen do |message|
@@ -32,24 +88,33 @@ Telegram::Bot::Client.run(token) do |bot|
       next if message.text.blank? && message.contact.blank?
 
       user = ensure_user(message)
+      text = message.text.to_s.strip
 
-      if message.text&.start_with?("/start")
-        bot.api.send_message(
-          chat_id: message.chat.id,
-          text: "Listo. Mandame gastos tipo: \"hamburguesa 8500\" o \"pago luz 23000\".\n\nSi mandás sin monto, te lo pregunto.\n\nSi querés asociar teléfono, mandá /phone y compartís tu contacto."
-        )
+      if text.start_with?("/start")
+        bot.api.send_message(chat_id: message.chat.id, text: "Listo.\n\n#{HELP_TEXT}")
         next
       end
 
-      if message.text&.start_with?("/help")
-        bot.api.send_message(
-          chat_id: message.chat.id,
-          text: "Ejemplos:\n- hamburguesa 8500\n- pago internet 24000\n- kiosko gaseosa 2500\n\nSi mandás sin monto, te lo pregunto."
-        )
+      if text.start_with?("/help") || text.start_with?("/ayuda")
+        bot.api.send_message(chat_id: message.chat.id, text: HELP_TEXT)
         next
       end
 
-      if message.text&.start_with?("/phone")
+      if text.start_with?("/ultimos") || text.start_with?("/últimos")
+        send_recent(bot, message.chat.id, user)
+        next
+      end
+
+      # /resumen, /mes ..., /septiembre, /enero 2025, etc.
+      cmd = text.split(/\s+/, 2).first.to_s
+      bare = cmd.sub(%r{\A/}, "").split("@", 2).first
+      if %w[resumen mes].include?(bare) || ExpenseMonthSummary::MONTHS.key?(bare)
+        query = text.sub(%r{\A/}, "").split("@", 2).first
+        send_month_summary(bot, message.chat.id, user, query)
+        next
+      end
+
+      if text.start_with?("/phone")
         kb = Telegram::Bot::Types::ReplyKeyboardMarkup.new(
           keyboard: [[Telegram::Bot::Types::KeyboardButton.new(text: "Compartir mi contacto", request_contact: true)]],
           resize_keyboard: true,
@@ -73,7 +138,11 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      text = message.text.to_s.strip
+      # Si es un comando desconocido, no lo registremos como gasto.
+      if text.start_with?("/")
+        bot.api.send_message(chat_id: message.chat.id, text: "Comando desconocido.\n\n#{HELP_TEXT}")
+        next
+      end
 
       # Si hay un borrador esperando monto, aceptar número como respuesta.
       draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
@@ -100,8 +169,8 @@ Telegram::Bot::Client.run(token) do |bot|
           category: cat.category,
           subcategory: cat.subcategory,
           raw_text: draft.raw_text,
-          llm_provider: ENV["LLM_PROVIDER"],
-          llm_model: ENV["OPENAI_MODEL"],
+          llm_provider: extracted.provider,
+          llm_model: extracted.model,
           llm_confidence: cat.confidence,
           metadata: { flow: "draft_amount" }
         )
@@ -139,8 +208,8 @@ Telegram::Bot::Client.run(token) do |bot|
         subcategory: cat.subcategory,
         spent_at: Time.zone.now,
         raw_text: text,
-        llm_provider: ENV["LLM_PROVIDER"],
-        llm_model: ENV["OPENAI_MODEL"],
+        llm_provider: extracted.provider,
+        llm_model: extracted.model,
         llm_confidence: cat.confidence,
         metadata: { flow: "direct", parser: { amount_cents: amount_cents } }
       )
@@ -154,5 +223,3 @@ Telegram::Bot::Client.run(token) do |bot|
     bot.api.send_message(chat_id: message.chat.id, text: "Error: #{e.class} - #{e.message}") rescue nil
   end
 end
-
-
