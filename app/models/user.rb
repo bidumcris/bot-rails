@@ -3,10 +3,10 @@ class User < ApplicationRecord
   has_many :draft_expenses, dependent: :destroy
 
   OCCUPATIONS = [
-    "Sistemas / desarrollo",
-    "Pilates / servicios",
-    "Comercio",
     "Empleado",
+    "Docente",
+    "Vendedor",
+    "Estudiante",
     "Otro"
   ].freeze
 
@@ -30,10 +30,10 @@ class User < ApplicationRecord
     return if raw.start_with?("/")
 
     t = raw.downcase
-    return "Sistemas / desarrollo" if t.match?(/program|desarroll|sistemas|software|dev|codigo|código|rails|web/)
-    return "Pilates / servicios" if t.match?(/pilates|entren|profe|profesor|servicio/)
-    return "Comercio" if t.match?(/comercio|kiosco|kiosko|local|venta|negocio/)
-    return "Empleado" if t.match?(/empleado|relaci[oó]n\s+de\s+dependencia|sueldo/)
+    return "Docente" if t.match?(/docente|profesor|profe|maestro|maestra|enseña/)
+    return "Vendedor" if t.match?(/vendedor|venta|comercio|kiosco|kiosko|negocio|local/)
+    return "Estudiante" if t.match?(/estudiante|estudio|alumno|facultad|universidad|secundario/)
+    return "Empleado" if t.match?(/empleado|program|desarroll|sistemas|software|sueldo|dependencia|oficina|trabajo/)
 
     raw.truncate(80)
   end

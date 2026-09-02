@@ -70,8 +70,8 @@ end
 def occupation_keyboard
   Telegram::Bot::Types::ReplyKeyboardMarkup.new(
     keyboard: [
-      [btn("Sistemas / desarrollo"), btn("Pilates / servicios")],
-      [btn("Comercio"), btn("Empleado")],
+      [btn("Empleado"), btn("Docente")],
+      [btn("Vendedor"), btn("Estudiante")],
       [btn("Otro")]
     ],
     resize_keyboard: true,

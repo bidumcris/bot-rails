@@ -34,7 +34,7 @@ Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/movimientos` `/perfil`
 
 ### Al empezar
 
-`/inicio` pregunta **a qué te dedicás** (Sistemas, Pilates, Comercio, Empleado, Otro).  
+`/inicio` pregunta **a qué te dedicás** (Empleado, Docente, Vendedor, Estudiante, Otro).  
 Eso ayuda a clasificar cobros vs gastos. Se cambia con `/trabajo`.
 
 ### Registrar un gasto o ingreso
