@@ -23,6 +23,21 @@ class User < ApplicationRecord
     !onboarded? || onboarding_step.present?
   end
 
+  def self.normalize_occupation(text)
+    raw = text.to_s.strip
+    return if raw.blank?
+    return raw if OCCUPATIONS.include?(raw)
+    return if raw.start_with?("/")
+
+    t = raw.downcase
+    return "Sistemas / desarrollo" if t.match?(/program|desarroll|sistemas|software|dev|codigo|código|rails|web/)
+    return "Pilates / servicios" if t.match?(/pilates|entren|profe|profesor|servicio/)
+    return "Comercio" if t.match?(/comercio|kiosco|kiosko|local|venta|negocio/)
+    return "Empleado" if t.match?(/empleado|relaci[oó]n\s+de\s+dependencia|sueldo/)
+
+    raw.truncate(80)
+  end
+
   private
 
   def apply_defaults

@@ -282,21 +282,27 @@ Telegram::Bot::Client.run(token) do |bot|
       end
 
       if user.needs_onboarding? && !%w[inicio start ayuda help].include?(cmd)
-        if user.onboarding_step == "ask_occupation_detail"
-          user.update!(occupation: text.truncate(80), onboarding_step: nil)
-          bot.api.send_message(chat_id: message.chat.id, text: "Listo. Rubro: #{user.occupation}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
+        if text.start_with?("/") && text.present?
+          bot.api.send_message(chat_id: message.chat.id, text: "Primero decime a qué te dedicás (podés escribirlo, ej: soy programador).")
+          ask_occupation(bot, message.chat.id, intro: false)
           next
         end
 
-        choice = text.presence
-        if User::OCCUPATIONS.include?(choice)
-          if choice == "Otro"
-            user.update!(onboarding_step: "ask_occupation_detail")
-            bot.api.send_message(chat_id: message.chat.id, text: "Contame en una frase a qué te dedicás.", reply_markup: remove_keyboard)
-          else
-            user.update!(occupation: choice, onboarding_step: nil)
-            bot.api.send_message(chat_id: message.chat.id, text: "Perfecto, rubro: #{choice}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
-          end
+        if text.blank?
+          ask_occupation(bot, message.chat.id, intro: false)
+          next
+        end
+
+        if text == "Otro"
+          user.update!(onboarding_step: "ask_occupation_detail")
+          bot.api.send_message(chat_id: message.chat.id, text: "Contame en una frase a qué te dedicás.", reply_markup: remove_keyboard)
+          next
+        end
+
+        occupation = User.normalize_occupation(text)
+        if occupation.present?
+          user.update!(occupation: occupation, onboarding_step: nil)
+          bot.api.send_message(chat_id: message.chat.id, text: "Perfecto, rubro: #{occupation}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
           next
         end
 
