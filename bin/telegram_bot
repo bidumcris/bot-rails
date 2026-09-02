@@ -9,18 +9,22 @@ token = token_raw.strip[/\d+:[A-Za-z0-9_-]+/]
 abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.blank?
 
 HELP_TEXT = <<~TXT.strip
-  🧾 Bot de gastos e ingresos (ARS)
+  🧾 Bot de gastos e ingresos (ARS + dólar oficial BNA)
 
   Registrar (texto o foto de comprobante):
   • hamburguesa 8500
+  • netflix 8 usd
   • cobro 84150 servicio pilates
   • transferencia 21mil de gime
   • 2 menús 9000 cada uno
+
+  Si un monto se ve raro (hamburguesa a $125.000, Netflix carísimo), te pregunto antes de guardar.
 
   Consultas:
   • /resumen — mes actual (ingresos, gastos, balance)
   • /septiembre — un mes
   • /movimientos — últimos 10
+  • /dolar — cotización oficial Banco Nación
   • /perfil — tu rubro de trabajo
 
   Otros:
@@ -36,9 +40,13 @@ SPANISH_COMMANDS = [
   Telegram::Bot::Types::BotCommand.new(command: "movimientos", description: "Últimos 10 movimientos"),
   Telegram::Bot::Types::BotCommand.new(command: "perfil", description: "Ver tu perfil"),
   Telegram::Bot::Types::BotCommand.new(command: "trabajo", description: "Cambiar a qué te dedicás"),
+  Telegram::Bot::Types::BotCommand.new(command: "dolar", description: "Dólar oficial Banco Nación"),
   Telegram::Bot::Types::BotCommand.new(command: "borrarultimo", description: "Borrar el último movimiento"),
   Telegram::Bot::Types::BotCommand.new(command: "telefono", description: "Asociar tu número")
 ].freeze
+
+CONFIRM_YES = "Sí, está bien"
+CONFIRM_CANCEL = "Cancelar"
 
 def ensure_user(message)
   telegram_user_id = message.from&.id&.to_s
@@ -51,8 +59,15 @@ def ensure_user(message)
 end
 
 def format_ars(amount_cents)
-  pesos = amount_cents.to_i / 100.0
-  format("$%.2f ARS", pesos)
+  MoneyFormat.ars(amount_cents)
+end
+
+def format_money(amount_cents, rate: BnaOfficialDollar.current)
+  MoneyFormat.ars_with_usd(amount_cents, rate: rate)
+end
+
+def suggestion_label(cents)
+  "Usar #{MoneyFormat.ars(cents)}"
 end
 
 def kind_label(kind)
@@ -94,14 +109,38 @@ end
 
 def send_profile(bot, chat_id, user)
   rubro = user.occupation.presence || "todavía no lo cargaste"
-  bot.api.send_message(
-    chat_id: chat_id,
-    text: "👤 Perfil\nRubro: #{rubro}\nMoneda: #{user.currency}\nZona: #{user.time_zone}"
-  )
+  rate = BnaOfficialDollar.current
+  lines = [
+    "👤 Perfil",
+    "Rubro: #{rubro}",
+    "Moneda: #{user.currency}",
+    "Zona: #{user.time_zone}"
+  ]
+  lines << dollar_rate_line(rate) if rate
+  bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
+end
+
+def dollar_rate_line(rate)
+  return "💵 Oficial BNA no disponible ahora" unless rate
+
+  stale = rate.stale ? " (última conocida)" : ""
+  updated = rate.updated_at&.in_time_zone&.strftime("%d/%m %H:%M")
+  "💵 Oficial BNA compra #{MoneyFormat.ars((rate.compra * 100).round)} / venta #{MoneyFormat.ars((rate.venta * 100).round)}#{stale}" \
+    "#{updated ? " — #{updated}" : ""}"
+end
+
+def send_dollar_rate(bot, chat_id)
+  rate = BnaOfficialDollar.current
+  unless rate
+    bot.api.send_message(chat_id: chat_id, text: "No pude leer el dólar oficial BNA ahora. Probá en un rato.")
+    return
+  end
+
+  bot.api.send_message(chat_id: chat_id, text: dollar_rate_line(rate))
 end
 
 def resolve_amount_and_kind(text, extracted)
-  amount_cents, description, kind = ExpenseTextParser.parse(text)
+  amount_cents, description, kind = ExpenseTextParser.parse(text, usd_venta: BnaOfficialDollar.current&.venta)
   kind = extracted.kind if extracted&.kind.present?
 
   if text.match?(/cada\s+(uno|una)\b/i) && extracted&.amount_cents.to_i.positive?
@@ -138,7 +177,11 @@ def send_month_summary(bot, chat_id, user, query_text)
   result = ExpenseMonthSummary.for_user(user, from: from, to: to)
   bot.api.send_message(
     chat_id: chat_id,
-    text: ExpenseMonthSummary.format_message(result, format_ars: method(:format_ars))
+    text: ExpenseMonthSummary.format_message(
+      result,
+      format_ars: method(:format_ars),
+      usd_rate: BnaOfficialDollar.current
+    )
   )
 end
 
@@ -153,7 +196,9 @@ def send_recent(bot, chat_id, user, limit: 10)
   expenses.each do |e|
     day = e.spent_at.in_time_zone.strftime("%d/%m")
     sign = e.income? ? "+" : "-"
-    lines << "• #{day} #{sign}#{format_ars(e.amount_cents)} — #{kind_label(e.kind)}/#{e.category} — #{e.description}"
+    usd = e.metadata.is_a?(Hash) ? e.metadata.dig("bna", "usd") || e.metadata.dig(:bna, :usd) : nil
+    usd_txt = usd ? " (#{MoneyFormat.usd(usd.to_f)})" : ""
+    lines << "• #{day} #{sign}#{format_ars(e.amount_cents)}#{usd_txt} — #{kind_label(e.kind)}/#{e.category} — #{e.description}"
   end
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
 end
@@ -173,11 +218,170 @@ def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_t
     kind: kind,
     spent_at: Time.zone.now,
     raw_text: raw_text,
-    llm_provider: extracted.provider,
-    llm_model: extracted.model,
+    llm_provider: extracted&.provider,
+    llm_model: extracted&.model,
     llm_confidence: cat.confidence,
+    metadata: dollar_metadata(amount_cents, metadata)
+  )
+end
+
+def dollar_metadata(amount_cents, extra)
+  meta = (extra || {}).transform_keys(&:to_s)
+  rate = BnaOfficialDollar.current
+  if rate
+    meta["bna"] = {
+      "compra" => rate.compra,
+      "venta" => rate.venta,
+      "usd" => BnaOfficialDollar.ars_to_usd(amount_cents, rate: rate)&.round(4),
+      "source" => rate.source,
+      "at" => rate.updated_at&.iso8601,
+      "stale" => rate.stale
+    }
+  end
+  meta
+end
+
+def saved_message(expense, prefix: nil)
+  head = [prefix, kind_label(expense.kind)].compact.join(" ")
+  "#{head}: #{format_money(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+end
+
+def clear_open_drafts(user)
+  user.draft_expenses.where(state: %w[awaiting_amount awaiting_confirmation]).delete_all
+end
+
+def confirmation_keyboard(suggestions)
+  rows = [[btn(CONFIRM_YES)]]
+  suggestions.each { |s| rows << [btn(suggestion_label(s.amount_cents))] }
+  rows << [btn(CONFIRM_CANCEL)]
+  Telegram::Bot::Types::ReplyKeyboardMarkup.new(
+    keyboard: rows,
+    resize_keyboard: true,
+    one_time_keyboard: true
+  )
+end
+
+def suspicious_message(check, amount_cents, description, rate)
+  item = check.item_label.presence || description
+  lines = ["🤔 ¿Está bien el monto?", ""]
+  lines << "#{item.to_s.capitalize} a #{format_money(amount_cents, rate: rate)} se me hace caro."
+  if check.min_usd && check.max_usd && rate&.venta.to_f.positive?
+    min_ars = BnaOfficialDollar.usd_to_ars_cents(check.min_usd, rate: rate)
+    max_ars = BnaOfficialDollar.usd_to_ars_cents(check.max_usd, rate: rate)
+    lines << "Lo habitual anda entre #{MoneyFormat.usd(check.min_usd)} y #{MoneyFormat.usd(check.max_usd)} (unos #{format_ars(min_ars)} a #{format_ars(max_ars)})."
+  end
+  if check.suggestions.any?
+    sug = check.suggestions.first
+    lines << ""
+    lines << "¿Era #{format_money(sug.amount_cents, rate: rate)}?"
+  end
+  lines.join("\n")
+end
+
+def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil)
+  rate = BnaOfficialDollar.current
+  cat = classify_entry(description, kind, extracted)
+  check = AmountSanityChecker.check(
+    amount_cents: amount_cents,
+    description: description,
+    kind: kind,
+    category: cat.category,
+    user: user,
+    rate: rate
+  )
+
+  if check.suspicious
+    clear_open_drafts(user)
+    user.draft_expenses.create!(
+      raw_text: raw_text,
+      state: "awaiting_confirmation",
+      extracted: {
+        "amount_cents" => amount_cents,
+        "description" => description,
+        "kind" => kind,
+        "category" => cat.category,
+        "subcategory" => cat.subcategory,
+        "confidence" => cat.confidence,
+        "provider" => extracted&.provider,
+        "model" => extracted&.model,
+        "suggestions" => check.suggestions.map { |s| { "amount_cents" => s.amount_cents } },
+        "metadata" => metadata,
+        "prefix" => prefix
+      }
+    )
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: suspicious_message(check, amount_cents, description, rate),
+      reply_markup: confirmation_keyboard(check.suggestions)
+    )
+    return
+  end
+
+  expense = persist_movement(
+    user,
+    amount_cents: amount_cents,
+    description: description,
+    kind: kind,
+    extracted: extracted,
+    raw_text: raw_text,
     metadata: metadata
   )
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: saved_message(expense, prefix: prefix),
+    reply_markup: remove_keyboard
+  )
+end
+
+def handle_confirmation(bot, chat_id, user, text)
+  draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_confirmation")
+  return :none unless draft
+
+  data = draft.extracted || {}
+  suggestions = Array(data["suggestions"])
+  lowered = text.to_s.strip.downcase
+
+  if text == CONFIRM_CANCEL || %w[cancelar no].include?(lowered)
+    draft.destroy!
+    bot.api.send_message(chat_id: chat_id, text: "Listo, no lo guardé.", reply_markup: remove_keyboard)
+    return :handled
+  end
+
+  chosen = nil
+  if text == CONFIRM_YES || lowered.match?(/\A(s[ií]|ok|dale|confirmo)\z/)
+    chosen = data["amount_cents"].to_i
+  else
+    match = suggestions.find { |s| text == suggestion_label(s["amount_cents"].to_i) }
+    chosen = match["amount_cents"].to_i if match
+  end
+  return :ignore unless chosen.to_i.positive?
+
+  extracted = ExpenseAiExtractor::Extraction.new(
+    amount_cents: chosen,
+    description: data["description"],
+    category: data["category"],
+    subcategory: data["subcategory"],
+    confidence: data["confidence"].to_f,
+    provider: data["provider"],
+    model: data["model"],
+    kind: data["kind"]
+  )
+  expense = persist_movement(
+    user,
+    amount_cents: chosen,
+    description: data["description"],
+    kind: data["kind"],
+    extracted: extracted,
+    raw_text: draft.raw_text,
+    metadata: (data["metadata"] || {}).merge("confirmed" => true)
+  )
+  draft.destroy!
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: saved_message(expense, prefix: data["prefix"]),
+    reply_markup: remove_keyboard
+  )
+  :handled
 end
 
 def download_telegram_file(token, file_path, message_id)
@@ -248,18 +452,17 @@ def handle_photo(bot, token, message, user, ai)
     return
   end
 
-  expense = persist_movement(
+  save_or_confirm(
+    bot,
+    message.chat.id,
     user,
     amount_cents: amount_cents,
     description: description,
     kind: kind,
     extracted: extracted,
     raw_text: combined,
-    metadata: { flow: "photo_ocr" }
-  )
-  bot.api.send_message(
-    chat_id: message.chat.id,
-    text: "#{kind_label(expense.kind)} (foto): #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+    metadata: { flow: "photo_ocr" },
+    prefix: "(foto)"
   )
 end
 
@@ -331,6 +534,11 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
+      if %w[dolar dólar].include?(cmd)
+        send_dollar_rate(bot, message.chat.id)
+        next
+      end
+
       if %w[trabajo].include?(cmd)
         user.update!(onboarding_step: "ask_occupation")
         ask_occupation(bot, message.chat.id, intro: false)
@@ -388,31 +596,41 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
+      confirmation = handle_confirmation(bot, message.chat.id, user, text)
+      next if confirmation == :handled
+
+      if confirmation == :ignore
+        user.draft_expenses.where(state: "awaiting_confirmation").delete_all
+      end
+
       draft = user.draft_expenses.order(created_at: :desc).find_by(state: "awaiting_amount")
       if draft && text.match?(/\d/)
-        amount_cents, _, kind_from_amount = ExpenseTextParser.parse(text, currency: user.currency)
+        amount_cents, _, kind_from_amount = ExpenseTextParser.parse(
+          text,
+          currency: user.currency,
+          usd_venta: BnaOfficialDollar.current&.venta
+        )
         if amount_cents.nil?
-          bot.api.send_message(chat_id: message.chat.id, text: "No entendí el monto. Probá: 8500 o 23.000,50")
+          bot.api.send_message(chat_id: message.chat.id, text: "No entendí el monto. Probá: 8500, 23.000,50 o 8 usd")
           next
         end
 
         description = draft.extracted["description"].presence || draft.raw_text
+        raw_text = draft.raw_text
         kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
         extracted = extract_for(user, description, ai)
         kind = extracted.kind if extracted.kind.present?
-        expense = persist_movement(
+        draft.destroy!
+        save_or_confirm(
+          bot,
+          message.chat.id,
           user,
           amount_cents: amount_cents,
           description: description,
           kind: kind,
           extracted: extracted,
-          raw_text: draft.raw_text,
+          raw_text: raw_text,
           metadata: { flow: "draft_amount" }
-        )
-        draft.destroy!
-        bot.api.send_message(
-          chat_id: message.chat.id,
-          text: "#{kind_label(expense.kind)}: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
         )
         next
       end
@@ -421,16 +639,19 @@ Telegram::Bot::Client.run(token) do |bot|
       amount_cents, description, kind = resolve_amount_and_kind(text, extracted)
 
       if amount_cents.nil?
+        user.draft_expenses.where(state: "awaiting_amount").delete_all
         user.draft_expenses.create!(
           raw_text: text,
           extracted: { "description" => description, "kind" => kind },
           state: "awaiting_amount"
         )
-        bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"?")
+        bot.api.send_message(chat_id: message.chat.id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd.")
         next
       end
 
-      expense = persist_movement(
+      save_or_confirm(
+        bot,
+        message.chat.id,
         user,
         amount_cents: amount_cents,
         description: description,
@@ -438,11 +659,6 @@ Telegram::Bot::Client.run(token) do |bot|
         extracted: extracted,
         raw_text: text,
         metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind } }
-      )
-
-      bot.api.send_message(
-        chat_id: message.chat.id,
-        text: "#{kind_label(expense.kind)}: #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
       )
     end
   rescue StandardError => e

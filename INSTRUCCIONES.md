@@ -30,7 +30,7 @@ bin/rails s
 
 ## Comandos en Telegram
 
-Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/movimientos` `/perfil` `/trabajo` `/borrarultimo`
+Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/movimientos` `/dolar` `/perfil` `/trabajo` `/borrarultimo`
 
 ### Al empezar
 
@@ -39,15 +39,17 @@ Eso ayuda a clasificar cobros vs gastos. Se cambia con `/trabajo`.
 
 ### Registrar un gasto o ingreso
 
-Escribí en lenguaje natural (pesos ARS):
+Escribí en lenguaje natural (pesos ARS o dólares):
 
 | Ejemplo | Qué hace |
 |---------|----------|
-| `hamburguesa 8500` | **Gasto** Comida $8500 |
-| `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84150 |
-| `transferencia 21mil de gime` | **Ingreso** Transferencias $21000 |
-| `2 menús 9000 cada uno` | **Gasto** Comida $18000 |
-| `pago regalo maestro 10000` | **Gasto** Regalos $10000 |
+| `hamburguesa 8500` | **Gasto** Comida $8.500 (y el equivalente en USD oficial BNA) |
+| `netflix 8 usd` | **Gasto** Suscripciones, convierte 8 USD → ARS con venta BNA |
+| `hamburguesa 125000` | **Duda**: una hamburguesa a ~USD 80 no cierra; te pide confirmar o usar $12.500 |
+| `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84.150 |
+| `transferencia 21mil de gime` | **Ingreso** Transferencias $21.000 |
+| `2 menús 9000 cada uno` | **Gasto** Comida $18.000 |
+| `pago regalo maestro 10000` | **Gasto** Regalos $10.000 |
 
 ### Ver el mes
 
@@ -57,6 +59,7 @@ Escribí en lenguaje natural (pesos ARS):
 | `/septiembre` | Idem para septiembre |
 | `/mes septiembre 2025` | Otro año |
 | `/movimientos` | Últimos 10 movimientos (+ ingreso / − gasto) |
+| `/dolar` | Compra/venta oficial Banco Nación |
 | `/perfil` | Rubro y configuración |
 | Foto de comprobante | Si hay Tesseract, lee el texto; si no, te pide el monto |
 
@@ -106,7 +109,8 @@ systemctl --user start ollama
 
 ## Tips
 
-- El monto se parsea de forma fija (`8500`, `23.000`, `23k`). La IA (Ollama 3B) ayuda sobre todo a **categorizar**.
+- El monto se parsea de forma fija (`8500`, `23.000`, `23k`, `8 usd`). La IA (Ollama 3B) ayuda sobre todo a **categorizar**.
+- Los montos se muestran también en **USD oficial Banco Nación** (venta). Si un gasto conocido (comida, suscripciones, etc.) queda muy por encima de lo habitual, el bot **pregunta antes de guardar**.
 - Zona horaria: `Buenos Aires` (los meses se cortan con esa zona).
 - Para ver todo en tabla: abrí la web en `http://localhost:3000`.
 - Si Ollama/túnel no están, el bot igual guarda gastos con reglas.

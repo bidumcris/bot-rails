@@ -3,12 +3,18 @@
 class ExpenseTextParser
   # Devuelve [amount_cents, description, kind]
   # kind: "expense" | "income"
-  def self.parse(text, currency: "ARS")
+  def self.parse(text, currency: "ARS", usd_venta: nil)
     raw = text.to_s.strip
     return [nil, raw, detect_kind(raw)] if raw.blank?
 
     kind = detect_kind(raw)
     expanded = expand_shorthand_amounts(raw)
+
+    if (usd = extract_usd_amount(expanded)) && usd_venta.to_f.positive?
+      amount_cents = (usd * usd_venta.to_f * 100).round
+      description = clean_description(strip_usd_tokens(expanded))
+      return [amount_cents, description.presence || raw, kind]
+    end
 
     # "2 menús ... 9000 cada uno" => 2 * 9000
     if (qty_match = expanded.match(/(\d+)\s+.{0,80}?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+)(?:\s*pesos?)?\s*cada\s+(?:uno|una)\b/i))
@@ -45,7 +51,7 @@ class ExpenseTextParser
   def self.clean_description(text)
     s = text.to_s
     s = s.gsub("$", " ")
-    s = s.gsub(/\b(pesos?|ars)\b/i, " ")
+    s = s.gsub(/\b(pesos?|ars|usd|u\$s|u\$d|d[oó]lares?)\b/i, " ")
     s = s.gsub(/\bcada\s+(uno|una)\b/i, " ")
     s = s.gsub(/\s+/, " ").strip
     s = s.gsub(/\A[-–—:;,]+\s*/, "").gsub(/\s*[-–—:;,]+\z/, "").strip
@@ -115,5 +121,26 @@ class ExpenseTextParser
     decimals = "00" if decimals.blank?
 
     (int_digits.to_i * 100) + decimals.to_i
+  end
+
+  def self.extract_usd_amount(text)
+    if (m = text.to_s.match(/(\d+(?:[.,]\d{1,2})?)\s*(usd|u\$s|u\$d|d[oó]lares?)\b/i))
+      return normalize_usd_token(m[1])
+    end
+    if (m = text.to_s.match(/\b(usd|u\$s|u\$d)\s*(\d+(?:[.,]\d{1,2})?)/i))
+      return normalize_usd_token(m[2])
+    end
+
+    nil
+  end
+
+  def self.strip_usd_tokens(text)
+    s = text.to_s
+    s = s.gsub(/(\d+(?:[.,]\d{1,2})?)\s*(usd|u\$s|u\$d|d[oó]lares?)\b/i, " ")
+    s.gsub(/\b(usd|u\$s|u\$d)\s*(\d+(?:[.,]\d{1,2})?)/i, " ")
+  end
+
+  def self.normalize_usd_token(token)
+    token.to_s.tr(",", ".").to_f
   end
 end

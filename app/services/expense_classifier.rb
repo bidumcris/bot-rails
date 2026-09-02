@@ -29,7 +29,7 @@ class ExpenseClassifier
       [/agua|aysa/, ["Servicios", "Agua"]],
       [/sube|uber|cabify|taxi|colectivo|tren|nafta|combustible/, ["Transporte", nil]],
       [/farmacia|medico|clínica|obra social|osde|swiss/, ["Salud", nil]],
-      [/netflix|spotify|youtube|disney|prime/, ["Suscripciones", nil]]
+      [/netflix|spotify|youtube|disney|prime|hbo|\bmax\b|flow|crunchyroll|chatgpt|icloud|google\s*one|suscrip/, ["Suscripciones", nil]]
     ]
 
     match = rules.find { |re, _| d.match?(re) }

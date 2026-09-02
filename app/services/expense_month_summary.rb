@@ -75,13 +75,19 @@ class ExpenseMonthSummary
     )
   end
 
-  def self.format_message(result, format_ars:)
+  def self.format_message(result, format_ars:, usd_rate: nil)
     balance = result.income_total_cents - result.expense_total_cents
     lines = []
     lines << "📅 #{result.label}"
     lines << "Ingresos: #{result.income_count} — #{format_ars.call(result.income_total_cents)}"
     lines << "Gastos: #{result.expense_count} — #{format_ars.call(result.expense_total_cents)}"
     lines << "Balance: #{format_ars.call(balance)}"
+    if usd_rate&.venta.to_f.positive?
+      to_usd = ->(cents) { format("USD %.2f", (cents.to_i / 100.0) / usd_rate.venta) }
+      lines << "≈ #{to_usd.call(result.income_total_cents)} ingresos / #{to_usd.call(result.expense_total_cents)} gastos"
+      stale = usd_rate.stale ? " (última conocida)" : ""
+      lines << "Oficial BNA venta #{MoneyFormat.ars((usd_rate.venta * 100).round)}#{stale}"
+    end
 
     if result.incomes_by_category.any?
       lines << ""
