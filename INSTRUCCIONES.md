@@ -30,6 +30,13 @@ bin/rails s
 
 ## Comandos en Telegram
 
+Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/movimientos` `/perfil` `/trabajo` `/borrarultimo`
+
+### Al empezar
+
+`/inicio` pregunta **a qué te dedicás** (Sistemas, Pilates, Comercio, Empleado, Otro).  
+Eso ayuda a clasificar cobros vs gastos. Se cambia con `/trabajo`.
+
 ### Registrar un gasto o ingreso
 
 Escribí en lenguaje natural (pesos ARS):
@@ -49,7 +56,9 @@ Escribí en lenguaje natural (pesos ARS):
 | `/resumen` | Ingresos + gastos + **balance** del mes actual |
 | `/septiembre` | Idem para septiembre |
 | `/mes septiembre 2025` | Otro año |
-| `/ultimos` | Últimos 10 movimientos (+ ingreso / − gasto) |
+| `/movimientos` | Últimos 10 movimientos (+ ingreso / − gasto) |
+| `/perfil` | Rubro y configuración |
+| Foto de comprobante | Si hay Tesseract, lee el texto; si no, te pide el monto |
 
 
 ---

@@ -2,10 +2,26 @@ class User < ApplicationRecord
   has_many :expenses, dependent: :destroy
   has_many :draft_expenses, dependent: :destroy
 
+  OCCUPATIONS = [
+    "Sistemas / desarrollo",
+    "Pilates / servicios",
+    "Comercio",
+    "Empleado",
+    "Otro"
+  ].freeze
+
   validates :telegram_user_id, presence: true, uniqueness: true
   validates :currency, inclusion: { in: %w[ARS] }, allow_nil: true
 
   before_validation :apply_defaults
+
+  def onboarded?
+    occupation.present?
+  end
+
+  def needs_onboarding?
+    !onboarded? || onboarding_step.present?
+  end
 
   private
 

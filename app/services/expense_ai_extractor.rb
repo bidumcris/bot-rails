@@ -30,7 +30,7 @@ class ExpenseAiExtractor
     end
   end
 
-  def extract(text, currency: "ARS")
+  def extract(text, currency: "ARS", occupation: nil)
     raw = text.to_s.strip
     kind_guess = ExpenseTextParser.detect_kind(raw)
     blank = Extraction.new(
@@ -42,8 +42,8 @@ class ExpenseAiExtractor
 
     data =
       case @provider
-      when "ollama" then extract_with_ollama(raw)
-      when "openai" then extract_with_openai(raw)
+      when "ollama" then extract_with_ollama(raw, occupation: occupation)
+      when "openai" then extract_with_openai(raw, occupation: occupation)
       end
 
     return blank if data.nil?
@@ -94,13 +94,21 @@ class ExpenseAiExtractor
     end
   end
 
-  def system_prompt
+  def system_prompt(occupation: nil)
+    extra =
+      if occupation.present?
+        "El usuario se dedica a: #{occupation}. Si habla de clientes, servicios o cobros de ese rubro, suele ser ingreso (Trabajo)."
+      else
+        ""
+      end
+
     <<~SYS.strip
       Sos un asistente de finanzas personales en Argentina.
       Respondé SOLO JSON válido. Moneda ARS.
       Distinguí gasto (expense) vs ingreso (income).
       Cobros, transferencias recibidas, depósitos = income.
       Pagos, compras, regalos que vos diste = expense.
+      #{extra}
     SYS
   end
 
@@ -125,17 +133,17 @@ class ExpenseAiExtractor
     TEXT
   end
 
-  def extract_with_ollama(raw)
-    ollama.chat_json(system: system_prompt, user: user_prompt(raw))
+  def extract_with_ollama(raw, occupation: nil)
+    ollama.chat_json(system: system_prompt(occupation: occupation), user: user_prompt(raw))
   end
 
-  def extract_with_openai(raw)
+  def extract_with_openai(raw, occupation: nil)
     payload = {
       model: model_name,
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: system_prompt },
+        { role: "system", content: system_prompt(occupation: occupation) },
         { role: "user", content: user_prompt(raw) }
       ]
     }

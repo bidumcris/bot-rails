@@ -11,22 +11,34 @@ abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.
 HELP_TEXT = <<~TXT.strip
   🧾 Bot de gastos e ingresos (ARS)
 
-  Registrar:
+  Registrar (texto o foto de comprobante):
   • hamburguesa 8500
   • cobro 84150 servicio pilates
   • transferencia 21mil de gime
   • 2 menús 9000 cada uno
-  (si no ponés monto, te lo pregunto)
 
-  Consultar mes:
-  • /resumen → mes actual (ingresos, gastos, balance)
-  • /septiembre
-  • /mes septiembre 2025
+  Consultas:
+  • /resumen — mes actual (ingresos, gastos, balance)
+  • /septiembre — un mes
+  • /movimientos — últimos 10
+  • /perfil — tu rubro de trabajo
 
   Otros:
-  • /ultimos → últimos 10 movimientos
-  • /help → esta ayuda
+  • /trabajo — cambiar a qué te dedicás
+  • /borrarultimo — deshacer el último movimiento
+  • /ayuda — esta ayuda
 TXT
+
+SPANISH_COMMANDS = [
+  Telegram::Bot::Types::BotCommand.new(command: "inicio", description: "Empezar y configurar perfil"),
+  Telegram::Bot::Types::BotCommand.new(command: "ayuda", description: "Ver comandos"),
+  Telegram::Bot::Types::BotCommand.new(command: "resumen", description: "Resumen del mes actual"),
+  Telegram::Bot::Types::BotCommand.new(command: "movimientos", description: "Últimos 10 movimientos"),
+  Telegram::Bot::Types::BotCommand.new(command: "perfil", description: "Ver tu perfil"),
+  Telegram::Bot::Types::BotCommand.new(command: "trabajo", description: "Cambiar a qué te dedicás"),
+  Telegram::Bot::Types::BotCommand.new(command: "borrarultimo", description: "Borrar el último movimiento"),
+  Telegram::Bot::Types::BotCommand.new(command: "telefono", description: "Asociar tu número")
+].freeze
 
 def ensure_user(message)
   telegram_user_id = message.from&.id&.to_s
@@ -47,11 +59,47 @@ def kind_label(kind)
   kind.to_s == "income" ? "Ingreso" : "Gasto"
 end
 
+def command_name(text)
+  text.to_s.split(/\s+/, 2).first.to_s.sub(%r{\A/}, "").split("@", 2).first.downcase
+end
+
+def occupation_keyboard
+  Telegram::Bot::Types::ReplyKeyboardMarkup.new(
+    keyboard: [
+      ["Sistemas / desarrollo", "Pilates / servicios"],
+      ["Comercio", "Empleado"],
+      ["Otro"]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true
+  )
+end
+
+def remove_keyboard
+  Telegram::Bot::Types::ReplyKeyboardRemove.new(remove_keyboard: true)
+end
+
+def ask_occupation(bot, chat_id, intro: true)
+  prefix = intro ? "Para categorizar mejor tus cobros y gastos, " : ""
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: "#{prefix}¿a qué te dedicás?",
+    reply_markup: occupation_keyboard
+  )
+end
+
+def send_profile(bot, chat_id, user)
+  rubro = user.occupation.presence || "todavía no lo cargaste"
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: "👤 Perfil\nRubro: #{rubro}\nMoneda: #{user.currency}\nZona: #{user.time_zone}"
+  )
+end
+
 def resolve_amount_and_kind(text, extracted)
   amount_cents, description, kind = ExpenseTextParser.parse(text)
   kind = extracted.kind if extracted&.kind.present?
 
-  # Si el texto tiene "cada uno" y la IA devolvió monto, preferimos ese (ej. 2 x 9000).
   if text.match?(/cada\s+(uno|una)\b/i) && extracted&.amount_cents.to_i.positive?
     amount_cents = extracted.amount_cents
   end
@@ -106,40 +154,203 @@ def send_recent(bot, chat_id, user, limit: 10)
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
 end
 
+def extract_for(user, text, ai)
+  ai.extract(text, currency: user.currency, occupation: user.occupation)
+end
+
+def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:)
+  cat = classify_entry(description, kind, extracted)
+  user.expenses.create!(
+    amount_cents: amount_cents,
+    currency: user.currency,
+    description: description,
+    category: cat.category,
+    subcategory: cat.subcategory,
+    kind: kind,
+    spent_at: Time.zone.now,
+    raw_text: raw_text,
+    llm_provider: extracted.provider,
+    llm_model: extracted.model,
+    llm_confidence: cat.confidence,
+    metadata: metadata
+  )
+end
+
+def download_telegram_file(token, file_path, message_id)
+  url = "https://api.telegram.org/file/bot#{token}/#{file_path}"
+  dir = Rails.root.join("tmp/receipts")
+  FileUtils.mkdir_p(dir)
+  ext = File.extname(file_path.to_s)
+  ext = ".jpg" if ext.blank?
+  dest = dir.join("#{message_id}#{ext}")
+  res = HTTPX.with(timeout: { connect_timeout: 10, read_timeout: 30 }).get(url.to_s)
+  return nil if res.is_a?(HTTPX::ErrorResponse) || res.status.to_i != 200
+
+  File.binwrite(dest, res.to_s)
+  dest
+end
+
+def handle_photo(bot, token, message, user, ai)
+  photo = Array(message.photo).max_by { |p| p.file_size.to_i }
+  return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer la foto.") unless photo
+
+  file = bot.api.get_file(file_id: photo.file_id)
+  path = download_telegram_file(token, file.file_path, message.message_id)
+  unless path
+    bot.api.send_message(chat_id: message.chat.id, text: "No pude descargar la foto. Probá de nuevo.")
+    return
+  end
+
+  caption = message.caption.to_s.strip
+  ocr_text = ReceiptOcr.extract_text(path)
+  combined = [caption, ocr_text].compact_blank.join("\n")
+
+  unless ReceiptOcr.available?
+    user.draft_expenses.create!(
+      raw_text: caption.presence || "comprobante foto",
+      extracted: { "description" => caption.presence || "comprobante", "kind" => "expense", "source" => "photo" },
+      state: "awaiting_amount"
+    )
+    bot.api.send_message(
+      chat_id: message.chat.id,
+      text: "Recibí la foto. Todavía no hay OCR en este servidor.\nEscribí el monto y de qué fue, ej: super 12500 o cobro 84150 pilates."
+    )
+    return
+  end
+
+  if combined.blank?
+    user.draft_expenses.create!(
+      raw_text: "comprobante foto",
+      extracted: { "description" => "comprobante", "kind" => "expense", "source" => "photo" },
+      state: "awaiting_amount"
+    )
+    bot.api.send_message(chat_id: message.chat.id, text: "Vi la foto pero no pude leer el texto. ¿Cuánto fue y de qué?")
+    return
+  end
+
+  extracted = extract_for(user, combined, ai)
+  amount_cents, description, kind = resolve_amount_and_kind(combined, extracted)
+
+  if amount_cents.nil?
+    user.draft_expenses.create!(
+      raw_text: combined,
+      extracted: { "description" => description, "kind" => kind, "source" => "photo_ocr" },
+      state: "awaiting_amount"
+    )
+    bot.api.send_message(
+      chat_id: message.chat.id,
+      text: "Leí el comprobante pero no encontré el monto.\nTexto: \"#{combined.truncate(180)}\"\n¿Cuánto fue en ARS?"
+    )
+    return
+  end
+
+  expense = persist_movement(
+    user,
+    amount_cents: amount_cents,
+    description: description,
+    kind: kind,
+    extracted: extracted,
+    raw_text: combined,
+    metadata: { flow: "photo_ocr" }
+  )
+  bot.api.send_message(
+    chat_id: message.chat.id,
+    text: "#{kind_label(expense.kind)} (foto): #{format_ars(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")} — #{expense.description}"
+  )
+end
+
 Telegram::Bot::Client.run(token) do |bot|
   ai = ExpenseAiExtractor.new
+  bot.api.set_my_commands(commands: SPANISH_COMMANDS, language_code: "es") rescue nil
+
   bot.listen do |message|
     case message
     when Telegram::Bot::Types::Message
-      next if message.text.blank? && message.contact.blank?
+      next if message.text.blank? && message.contact.blank? && message.photo.blank?
 
       user = ensure_user(message)
       text = message.text.to_s.strip
+      cmd = command_name(text)
 
-      if text.start_with?("/start")
-        bot.api.send_message(chat_id: message.chat.id, text: "Listo.\n\n#{HELP_TEXT}")
+      if message.photo.present? && !user.needs_onboarding?
+        handle_photo(bot, token, message, user, ai)
         next
       end
 
-      if text.start_with?("/help") || text.start_with?("/ayuda")
+      if user.needs_onboarding? && !%w[inicio start ayuda help].include?(cmd)
+        if user.onboarding_step == "ask_occupation_detail"
+          user.update!(occupation: text.truncate(80), onboarding_step: nil)
+          bot.api.send_message(chat_id: message.chat.id, text: "Listo. Rubro: #{user.occupation}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
+          next
+        end
+
+        choice = text.presence
+        if User::OCCUPATIONS.include?(choice)
+          if choice == "Otro"
+            user.update!(onboarding_step: "ask_occupation_detail")
+            bot.api.send_message(chat_id: message.chat.id, text: "Contame en una frase a qué te dedicás.", reply_markup: remove_keyboard)
+          else
+            user.update!(occupation: choice, onboarding_step: nil)
+            bot.api.send_message(chat_id: message.chat.id, text: "Perfecto, rubro: #{choice}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
+          end
+          next
+        end
+
+        user.update!(onboarding_step: "ask_occupation") unless user.onboarding_step.present?
+        ask_occupation(bot, message.chat.id)
+        next
+      end
+
+      if %w[inicio start].include?(cmd)
+        if user.onboarded?
+          bot.api.send_message(chat_id: message.chat.id, text: "Hola de nuevo (#{user.occupation}).\n\n#{HELP_TEXT}")
+        else
+          user.update!(onboarding_step: "ask_occupation")
+          ask_occupation(bot, message.chat.id)
+        end
+        next
+      end
+
+      if %w[ayuda help].include?(cmd)
         bot.api.send_message(chat_id: message.chat.id, text: HELP_TEXT)
         next
       end
 
-      if text.start_with?("/ultimos") || text.start_with?("/últimos")
+      if %w[perfil].include?(cmd)
+        send_profile(bot, message.chat.id, user)
+        next
+      end
+
+      if %w[trabajo].include?(cmd)
+        user.update!(onboarding_step: "ask_occupation")
+        ask_occupation(bot, message.chat.id, intro: false)
+        next
+      end
+
+      if %w[movimientos ultimos últimos].include?(cmd)
         send_recent(bot, message.chat.id, user)
         next
       end
 
-      cmd = text.split(/\s+/, 2).first.to_s
-      bare = cmd.sub(%r{\A/}, "").split("@", 2).first
-      if %w[resumen mes].include?(bare) || ExpenseMonthSummary::MONTHS.key?(bare)
+      if %w[borrarultimo borrar_ultimo deshacer].include?(cmd)
+        last = user.expenses.order(created_at: :desc).first
+        if last.nil?
+          bot.api.send_message(chat_id: message.chat.id, text: "No hay nada para borrar.")
+        else
+          summary = "#{kind_label(last.kind)} #{format_ars(last.amount_cents)} — #{last.description}"
+          last.destroy!
+          bot.api.send_message(chat_id: message.chat.id, text: "Borré el último movimiento: #{summary}")
+        end
+        next
+      end
+
+      if %w[resumen mes].include?(cmd) || ExpenseMonthSummary::MONTHS.key?(cmd)
         query = text.sub(%r{\A/}, "").split("@", 2).first
         send_month_summary(bot, message.chat.id, user, query)
         next
       end
 
-      if text.start_with?("/phone")
+      if %w[telefono phone].include?(cmd)
         kb = Telegram::Bot::Types::ReplyKeyboardMarkup.new(
           keyboard: [[Telegram::Bot::Types::KeyboardButton.new(text: "Compartir mi contacto", request_contact: true)]],
           resize_keyboard: true,
@@ -158,7 +369,7 @@ Telegram::Bot::Client.run(token) do |bot|
         phone = message.contact.phone_number.to_s
         phone = phone.start_with?("+") ? phone : "+#{phone}"
         user.update!(phone_e164: phone)
-        bot.api.send_message(chat_id: message.chat.id, text: "OK. Teléfono asociado: #{phone}")
+        bot.api.send_message(chat_id: message.chat.id, text: "OK. Teléfono asociado: #{phone}", reply_markup: remove_keyboard)
         next
       end
 
@@ -177,24 +388,17 @@ Telegram::Bot::Client.run(token) do |bot|
 
         description = draft.extracted["description"].presence || draft.raw_text
         kind = draft.extracted["kind"].presence || kind_from_amount || "expense"
-        extracted = ai.extract(description, currency: user.currency)
+        extracted = extract_for(user, description, ai)
         kind = extracted.kind if extracted.kind.present?
-        cat = classify_entry(description, kind, extracted)
-
-        expense = user.expenses.create!(
+        expense = persist_movement(
+          user,
           amount_cents: amount_cents,
-          currency: user.currency,
           description: description,
-          category: cat.category,
-          subcategory: cat.subcategory,
           kind: kind,
+          extracted: extracted,
           raw_text: draft.raw_text,
-          llm_provider: extracted.provider,
-          llm_model: extracted.model,
-          llm_confidence: cat.confidence,
           metadata: { flow: "draft_amount" }
         )
-
         draft.destroy!
         bot.api.send_message(
           chat_id: message.chat.id,
@@ -203,7 +407,7 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      extracted = ai.extract(text, currency: user.currency)
+      extracted = extract_for(user, text, ai)
       amount_cents, description, kind = resolve_amount_and_kind(text, extracted)
 
       if amount_cents.nil?
@@ -216,19 +420,13 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      cat = classify_entry(description, kind, extracted)
-      expense = user.expenses.create!(
+      expense = persist_movement(
+        user,
         amount_cents: amount_cents,
-        currency: user.currency,
         description: description,
-        category: cat.category,
-        subcategory: cat.subcategory,
         kind: kind,
-        spent_at: Time.zone.now,
+        extracted: extracted,
         raw_text: text,
-        llm_provider: extracted.provider,
-        llm_model: extracted.model,
-        llm_confidence: cat.confidence,
         metadata: { flow: "direct", parser: { amount_cents: amount_cents, kind: kind } }
       )
 
