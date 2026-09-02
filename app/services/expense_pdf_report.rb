@@ -180,6 +180,13 @@ class ExpensePdfReport
   end
 
   def footer(pdf)
+    pdf.repeat(:all) do
+      pdf.fill_color "64748B"
+      pdf.font_size(8) do
+        pdf.draw_text Brand::CREDIT, at: [0, 0]
+      end
+      pdf.fill_color "111827"
+    end
     pdf.number_pages "Página <page> de <total>", at: [0, 0], align: :right, size: 8, color: "64748B"
   end
 

@@ -35,6 +35,8 @@ HELP_TEXT = <<~TXT.strip
   • /trabajo — cambiar a qué te dedicás
   • /borrarultimo — deshacer el último movimiento
   • /ayuda — esta ayuda
+
+  #{Brand::CREDIT}
 TXT
 
 SPANISH_COMMANDS = [
@@ -119,7 +121,8 @@ def send_profile(bot, chat_id, user)
     "👤 Perfil",
     "Rubro: #{rubro}",
     "Moneda: #{user.currency}",
-    "Zona: #{user.time_zone}"
+    "Zona: #{user.time_zone}",
+    Brand::CREDIT
   ]
   lines << dollar_rate_line(rate) if rate
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
@@ -628,6 +631,8 @@ end
 Telegram::Bot::Client.run(token) do |bot|
   ai = ExpenseAiExtractor.new
   bot.api.set_my_commands(commands: SPANISH_COMMANDS, language_code: "es") rescue nil
+  bot.api.set_my_short_description(short_description: Brand::BOT_SHORT, language_code: "es") rescue nil
+  bot.api.set_my_description(description: Brand::BOT_ABOUT, language_code: "es") rescue nil
 
   bot.listen do |message|
     case message

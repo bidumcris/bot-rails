@@ -1,5 +1,7 @@
 # Instructivo — Bot de gastos (Telegram + Ollama)
 
+Creado por **BidumSystems**.
+
 ## Arranque rápido
 
 ```bash
@@ -100,7 +102,8 @@ bundle exec ruby bin/telegram_bot
 Tu VM Oracle `VM.Standard.A1.Flex` (4 OCPU / 24 GB, IP `165.1.121.75`) corre el **bot**.  
 La **IA** queda en esta notebook vía túnel SSH.
 
-Guía completa: **[DEPLOY_ORACLE.md](./DEPLOY_ORACLE.md)**
+Guía completa: **[DEPLOY_ORACLE.md](./DEPLOY_ORACLE.md)**  
+Plan de cobro (todavía no activo): **[MONETIZACION.md](./MONETIZACION.md)**
 
 Resumen:
 
