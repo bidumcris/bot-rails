@@ -31,16 +31,14 @@ class ExpenseAiExtractor
   end
 
   def extract(text, currency: "ARS", occupation: nil)
+    extract_all(text, currency: currency, occupation: occupation).first
+  end
+
+  def extract_all(text, currency: "ARS", occupation: nil)
     raw = text.to_s.strip
-    kind_guess = ExpenseTextParser.detect_kind(raw)
-    payment_guess = PaymentMethodDetector.detect(raw)
-    blank = Extraction.new(
-      amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name, kind: kind_guess,
-      payment_method: payment_guess
-    )
-    return blank if raw.blank?
-    return blank unless enabled?
+    fallback = [blank_extraction(raw)]
+    return fallback if raw.blank?
+    return fallback unless enabled?
 
     data =
       case @provider
@@ -48,11 +46,57 @@ class ExpenseAiExtractor
       when "openai" then extract_with_openai(raw, occupation: occupation)
       end
 
-    return blank if data.nil?
+    rows = normalize_payload(data)
+    return fallback if rows.empty?
+
+    items = rows.filter_map { |row| row_to_extraction(row, raw) }
+    items.presence || fallback
+  rescue StandardError
+    [blank_extraction(raw)]
+  end
+
+  private
+
+  def ollama
+    @ollama ||= OllamaClient.new
+  end
+
+  def model_name
+    case @provider
+    when "ollama"
+      ENV["OLLAMA_MODEL"].presence || "qwen2.5:3b"
+    else
+      ENV["OPENAI_MODEL"].presence || "gpt-4o-mini"
+    end
+  end
+
+  def blank_extraction(raw)
+    Extraction.new(
+      amount_cents: nil, description: raw.to_s, category: nil, subcategory: nil,
+      confidence: 0.0, provider: @provider, model: model_name,
+      kind: ExpenseTextParser.detect_kind(raw),
+      payment_method: PaymentMethodDetector.detect(raw)
+    )
+  end
+
+  def normalize_payload(data)
+    return [] if data.nil?
+    return data["items"] if data.is_a?(Hash) && data["items"].is_a?(Array)
+    return [data] if data.is_a?(Hash)
+
+    []
+  end
+
+  def row_to_extraction(data, raw)
+    return nil unless data.is_a?(Hash)
+
+    snippet = data["description"].presence || raw
+    kind_guess = ExpenseTextParser.detect_kind(snippet)
+    payment_guess = PaymentMethodDetector.detect(snippet)
 
     kind = data["kind"].to_s
     kind = kind_guess unless %w[expense income].include?(kind)
-    if PaymentMethodDetector.outflow?(raw) && !ExpenseTextParser.strong_income?(raw)
+    if PaymentMethodDetector.outflow?(snippet) && !ExpenseTextParser.strong_income?(snippet)
       kind = "expense"
     end
 
@@ -83,27 +127,6 @@ class ExpenseAiExtractor
       kind: kind,
       payment_method: payment
     )
-  rescue StandardError
-    Extraction.new(
-      amount_cents: nil, description: raw, category: nil, subcategory: nil,
-      confidence: 0.0, provider: @provider, model: model_name, kind: ExpenseTextParser.detect_kind(raw),
-      payment_method: PaymentMethodDetector.detect(raw)
-    )
-  end
-
-  private
-
-  def ollama
-    @ollama ||= OllamaClient.new
-  end
-
-  def model_name
-    case @provider
-    when "ollama"
-      ENV["OLLAMA_MODEL"].presence || "qwen2.5:3b"
-    else
-      ENV["OPENAI_MODEL"].presence || "gpt-4o-mini"
-    end
   end
 
   def system_prompt(occupation: nil)
@@ -121,13 +144,16 @@ class ExpenseAiExtractor
       Cobros, transferencias RECIBIDAS, depósitos = income.
       Pagos, compras, regalos que vos diste = expense.
       Si dice que PAGÓ por transferencia, Mercado Pago, tarjeta o efectivo, es expense. El medio de pago no lo convierte en ingreso.
+      Si el mensaje tiene VARIOS movimientos, devolvé uno por cada monto. No los sumes.
       #{extra}
     SYS
   end
 
   def user_prompt(raw)
     <<~TEXT
-      Interpretá el mensaje y devolvé JSON con:
+      Interpretá el mensaje y devolvé JSON:
+      {"items":[...]}
+      Cada item:
       - kind: "expense" o "income"
       - amount_cents: integer (ARS * 100) o null. Si dice "2 menús 9000 cada uno" => 1800000
       - description: string corta sin monto ni moneda
@@ -137,13 +163,12 @@ class ExpenseAiExtractor
       - confidence: 0..1
 
       Ejemplos:
-      - "Cobro 84150 por servicio pilates" => income, Trabajo, 8415000, payment_method null
-      - "Transferencia 21mil de gime a mi" => income, Transferencias, 2100000, payment_method Transferencia
-      - "amohadillas para comer 2500 por transferencia de mercadopago" => expense, Comida, 250000, payment_method Mercado Pago
-      - "hamburguesa 8500 en efectivo" => expense, Comida, 850000, payment_method Efectivo
-      - "Pago regalo día del maestro 10000" => expense, Regalos, 1000000
-      - "Compra 2 menús 9000 cada uno" => expense, Comida, 1800000
-      - "6000 milanesas de pollo" => expense, Comida, 600000
+      - "Cobro 84150 por servicio pilates" => items: [{income, Trabajo, 8415000}]
+      - "Transferencia 21mil de gime a mi" => items: [{income, Transferencias, 2100000, Transferencia}]
+      - "hamburguesa 8500 en efectivo" => items: [{expense, Comida, 850000, Efectivo}]
+      - "hamburguesa 8500 y coca 2000" => items: [{expense, Comida, 850000, hamburguesa}, {expense, Comida, 200000, coca}]
+      - "Compra 2 menús 9000 cada uno" => items: [{expense, Comida, 1800000}]
+      - "6000 milanesas de pollo" => items: [{expense, Comida, 600000}]
 
       Texto: "#{raw}"
     TEXT

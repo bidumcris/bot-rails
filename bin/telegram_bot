@@ -19,6 +19,7 @@ HELP_TEXT = <<~TXT.strip
   • cobro 84150 servicio pilates
   • transferencia 21mil de gime
   • 2 menús 9000 cada uno
+  • hamburguesa 8500 y coca 2000
   • 🎤 una nota de voz diciendo lo mismo
 
   Si un monto se ve raro (hamburguesa a $125.000, Netflix carísimo), te pregunto antes de guardar.
@@ -167,6 +168,58 @@ def resolve_amount_and_kind(text, extracted)
   description = PaymentMethodDetector.strip(description.to_s) if description.present?
   payment_method = extracted.payment_method if payment_method.blank? && extracted&.payment_method.present?
   [amount_cents, description, kind, payment_method]
+end
+
+def extract_all_for(user, text, ai)
+  ai.extract_all(text, currency: user.currency, occupation: user.occupation)
+end
+
+def pick_ai_for(item, ai_items, index)
+  ais = Array(ai_items)
+  match = ais.find { |a| a&.amount_cents.to_i.positive? && a.amount_cents.to_i == item.amount_cents.to_i }
+  match || ais[index]
+end
+
+def resolve_movements(text, ai_items)
+  parsed = ExpenseTextParser.parse_many(
+    text,
+    usd_venta: BnaOfficialDollar.current&.venta
+  )
+  list = Array(ai_items)
+
+  parsed.map.with_index do |item, index|
+    ai = pick_ai_for(item, list, index)
+    snippet = item.raw_text.presence || text
+    kind = item.kind
+    if PaymentMethodDetector.outflow?(snippet) && !ExpenseTextParser.strong_income?(snippet)
+      kind = "expense"
+    elsif ai&.kind.present? && %w[expense income].include?(ai.kind.to_s)
+      kind = ai.kind
+    end
+
+    description = item.description
+    if ai&.description.present?
+      ai_desc = PaymentMethodDetector.strip(ai.description.to_s)
+      if description.blank? || description.to_s.strip == text.to_s.strip
+        description = ai_desc
+      end
+    end
+    description = PaymentMethodDetector.strip(description.to_s) if description.present?
+
+    amount_cents = item.amount_cents
+    if parsed.size == 1 && text.match?(/cada\s+(uno|una)\b/i) && ai&.amount_cents.to_i.positive?
+      amount_cents = ai.amount_cents
+    end
+
+    {
+      amount_cents: amount_cents,
+      description: description,
+      kind: kind,
+      payment_method: item.payment_method.presence || ai&.payment_method,
+      extracted: ai,
+      raw_text: snippet
+    }
+  end
 end
 
 def classify_entry(description, kind, extracted)
@@ -339,29 +392,22 @@ def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extr
   )
 
   if check.suspicious
-    clear_open_drafts(user)
-    user.draft_expenses.create!(
+    ask_confirmation_for(
+      bot,
+      chat_id,
+      user,
       raw_text: raw_text,
-      state: "awaiting_confirmation",
-      extracted: {
-        "amount_cents" => amount_cents,
-        "description" => description,
-        "kind" => kind,
-        "payment_method" => method,
-        "category" => cat.category,
-        "subcategory" => cat.subcategory,
-        "confidence" => cat.confidence,
-        "provider" => extracted&.provider,
-        "model" => extracted&.model,
-        "suggestions" => check.suggestions.map { |s| { "amount_cents" => s.amount_cents } },
-        "metadata" => metadata,
-        "prefix" => prefix
-      }
-    )
-    bot.api.send_message(
-      chat_id: chat_id,
-      text: suspicious_message(check, amount_cents, description, rate),
-      reply_markup: confirmation_keyboard(check.suggestions)
+      movement: {
+        amount_cents: amount_cents,
+        description: description,
+        kind: kind,
+        payment_method: method,
+        extracted: extracted,
+        raw_text: raw_text
+      },
+      check: check,
+      metadata: metadata,
+      prefix: prefix
     )
     return
   end
@@ -427,13 +473,155 @@ def handle_confirmation(bot, chat_id, user, text)
     metadata: (data["metadata"] || {}).merge("confirmed" => true),
     payment_method: data["payment_method"]
   )
+  raw_text = draft.raw_text
+  queue = Array(data["queue"])
   draft.destroy!
   bot.api.send_message(
     chat_id: chat_id,
     text: saved_message(expense, prefix: data["prefix"]),
-    reply_markup: remove_keyboard
+    reply_markup: queue.any? ? nil : remove_keyboard
   )
+  ask_next_confirmation(bot, chat_id, user, raw_text: raw_text, queue: queue)
   :handled
+end
+
+def movement_draft_hash(movement, check, metadata: {}, prefix: nil)
+  extracted = movement[:extracted]
+  cat = classify_entry(movement[:description], movement[:kind], extracted)
+  {
+    "amount_cents" => movement[:amount_cents],
+    "description" => movement[:description],
+    "kind" => movement[:kind],
+    "payment_method" => movement[:payment_method],
+    "category" => cat.category,
+    "subcategory" => cat.subcategory,
+    "confidence" => cat.confidence,
+    "provider" => extracted&.provider,
+    "model" => extracted&.model,
+    "suggestions" => Array(check&.suggestions).map { |s| { "amount_cents" => s.amount_cents } },
+    "metadata" => metadata,
+    "prefix" => prefix
+  }
+end
+
+def ask_confirmation_for(bot, chat_id, user, raw_text:, movement:, check:, metadata: {}, prefix: nil, queue: [])
+  clear_open_drafts(user)
+  user.draft_expenses.create!(
+    raw_text: raw_text,
+    state: "awaiting_confirmation",
+    extracted: movement_draft_hash(movement, check, metadata: metadata, prefix: prefix).merge("queue" => queue)
+  )
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: suspicious_message(check, movement[:amount_cents], movement[:description], BnaOfficialDollar.current),
+    reply_markup: confirmation_keyboard(check.suggestions)
+  )
+end
+
+def ask_next_confirmation(bot, chat_id, user, raw_text:, queue:)
+  return if queue.blank?
+
+  nxt = queue.shift
+  movement = {
+    amount_cents: nxt["amount_cents"],
+    description: nxt["description"],
+    kind: nxt["kind"],
+    payment_method: nxt["payment_method"],
+    extracted: ExpenseAiExtractor::Extraction.new(
+      amount_cents: nxt["amount_cents"],
+      description: nxt["description"],
+      category: nxt["category"],
+      subcategory: nxt["subcategory"],
+      confidence: nxt["confidence"].to_f,
+      provider: nxt["provider"],
+      model: nxt["model"],
+      kind: nxt["kind"],
+      payment_method: nxt["payment_method"]
+    ),
+    raw_text: raw_text
+  }
+  suggestions = Array(nxt["suggestions"]).map { |s| AmountSanityChecker::Suggestion.new(amount_cents: s["amount_cents"].to_i, usd: nil) }
+  check = AmountSanityChecker::Check.new(
+    suspicious: true,
+    item_label: nxt["description"],
+    usd: nil,
+    min_usd: nil,
+    max_usd: nil,
+    suggestions: suggestions,
+    reason: :too_high
+  )
+  ask_confirmation_for(
+    bot,
+    chat_id,
+    user,
+    raw_text: raw_text,
+    movement: movement,
+    check: check,
+    metadata: nxt["metadata"] || {},
+    prefix: nxt["prefix"],
+    queue: queue
+  )
+end
+
+def save_movements(bot, chat_id, user, movements, raw_text:, metadata: {}, prefix: nil)
+  saved = []
+  pending = []
+
+  movements.each do |movement|
+    next if movement[:amount_cents].to_i <= 0
+
+    cat = classify_entry(movement[:description], movement[:kind], movement[:extracted])
+    check = AmountSanityChecker.check(
+      amount_cents: movement[:amount_cents],
+      description: movement[:description],
+      kind: movement[:kind],
+      category: cat.category,
+      user: user,
+      rate: BnaOfficialDollar.current
+    )
+    if check.suspicious
+      pending << [movement, check]
+    else
+      saved << persist_movement(
+        user,
+        amount_cents: movement[:amount_cents],
+        description: movement[:description],
+        kind: movement[:kind],
+        extracted: movement[:extracted],
+        raw_text: movement[:raw_text].presence || raw_text,
+        metadata: metadata.merge("batch" => true, "batch_size" => movements.size),
+        payment_method: movement[:payment_method]
+      )
+    end
+  end
+
+  if saved.any?
+    lines = ["Guardé #{saved.size} #{saved.size == 1 ? "movimiento" : "movimientos"}:"]
+    saved.each { |expense| lines << "• #{saved_message(expense, prefix: prefix)}" }
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: lines.join("\n"),
+      reply_markup: pending.any? ? nil : remove_keyboard
+    )
+  end
+
+  if pending.any?
+    movement, check = pending.shift
+    queue = pending.map { |m, c| movement_draft_hash(m, c, metadata: metadata, prefix: prefix) }
+    ask_confirmation_for(
+      bot,
+      chat_id,
+      user,
+      raw_text: raw_text,
+      movement: movement,
+      check: check,
+      metadata: metadata,
+      prefix: prefix,
+      queue: queue
+    )
+  elsif saved.empty?
+    bot.api.send_message(chat_id: chat_id, text: "No pude armar los movimientos. Probá de a uno.")
+  end
 end
 
 def telegram_file_path(bot, file_id)
@@ -510,8 +698,26 @@ def handle_natural_text(bot, chat_id, user, text, ai, metadata: {})
     return
   end
 
-  extracted = extract_for(user, text, ai)
-  amount_cents, description, kind, payment_method = resolve_amount_and_kind(text, extracted)
+  ai_items = extract_all_for(user, text, ai)
+  movements = resolve_movements(text, ai_items)
+  extracted = ai_items.first
+
+  if movements.size > 1 && movements.any? { |m| m[:amount_cents].to_i.positive? }
+    save_movements(
+      bot,
+      chat_id,
+      user,
+      movements,
+      raw_text: text,
+      metadata: { flow: metadata[:flow] || "direct", batch: true }
+    )
+    return
+  end
+
+  amount_cents = movements.first&.dig(:amount_cents)
+  description = movements.first&.dig(:description)
+  kind = movements.first&.dig(:kind)
+  payment_method = movements.first&.dig(:payment_method)
 
   if amount_cents.nil?
     user.draft_expenses.where(state: "awaiting_amount").delete_all

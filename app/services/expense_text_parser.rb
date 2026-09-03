@@ -1,6 +1,25 @@
 # frozen_string_literal: true
 
 class ExpenseTextParser
+  Item = Struct.new(:amount_cents, :description, :kind, :payment_method, :raw_text, keyword_init: true)
+
+  MAX_ITEMS = 8
+  SPLIT_CONJ = /\s*(?:,|;|\n|\by\b|\be\b|\bm[aá]s\b|\btambi[eé]n\b|\bluego\b|\bdespu[eé]s\b)\s*/i
+  AMOUNT_FINDER = /
+    (?<![\d.])
+    (?:\$\s*)?
+    (?:
+      \d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?
+      |
+      \d+(?:[.,]\d{1,2})?\s*(?:usd|u\$s|u\$d|d[oó]lares?)\b
+      |
+      (?:usd|u\$s|u\$d)\s*\d+(?:[.,]\d{1,2})?
+      |
+      \d{3,}(?:[.,]\d{1,2})?
+    )
+    (?!\d)(?![.,]\d)
+  /ix
+
   # Devuelve [amount_cents, description, kind]
   # kind: "expense" | "income"
   def self.parse(text, currency: "ARS", usd_venta: nil)
@@ -40,6 +59,99 @@ class ExpenseTextParser
     [amount_cents, description, kind, payment.method]
   end
 
+  def self.parse_many(text, currency: "ARS", usd_venta: nil)
+    raw = text.to_s.strip
+    return [] if raw.blank?
+
+    segments = split_segments(raw)
+    items = segments.filter_map do |seg|
+      amount_cents, description, kind, payment_method = parse(seg, currency: currency, usd_venta: usd_venta)
+      next if amount_cents.to_i <= 0
+
+      Item.new(
+        amount_cents: amount_cents,
+        description: description,
+        kind: kind,
+        payment_method: payment_method,
+        raw_text: seg
+      )
+    end.first(MAX_ITEMS)
+
+    return items if items.size >= 2
+
+    amount_cents, description, kind, payment_method = parse(raw, currency: currency, usd_venta: usd_venta)
+    [
+      Item.new(
+        amount_cents: amount_cents,
+        description: description,
+        kind: kind,
+        payment_method: payment_method,
+        raw_text: raw
+      )
+    ]
+  end
+
+  def self.split_segments(text)
+    expanded = expand_shorthand_amounts(text.to_s)
+    lines = expanded.split(/\n+/).map { |l| l.to_s.strip }.reject(&:blank?)
+    if lines.size >= 2
+      lined = lines.flat_map { |line| split_line_by_amounts(line) }
+      return lined if lined.size >= 2
+    end
+
+    split_line_by_amounts(expanded)
+  end
+
+  def self.split_line_by_amounts(expanded)
+    ranges = amount_ranges(expanded)
+    return [expanded] if ranges.size < 2
+
+    cuts = [0]
+    ranges.each_cons(2) do |(_s1, e1, _), (s2, _e2, _)|
+      between = expanded[e1...s2].to_s
+      if (m = between.match(SPLIT_CONJ))
+        cuts << (e1 + m.begin(0))
+        cuts << (e1 + m.end(0))
+      elsif trailing_for_current?(between)
+        cuts << s2
+      else
+        cuts << e1
+        cuts << e1
+      end
+    end
+    cuts << expanded.length
+
+    segments = []
+    cuts.each_slice(2) do |from, to|
+      next if from.nil? || to.nil? || to <= from
+
+      seg = clean_segment(expanded[from...to].to_s)
+      segments << seg if seg.present?
+    end
+    segments.presence || [expanded]
+  end
+
+  def self.amount_ranges(text)
+    ranges = []
+    text.to_s.scan(AMOUNT_FINDER) do
+      m = Regexp.last_match
+      ranges << [m.begin(0), m.end(0), m[0]]
+    end
+    ranges
+  end
+
+  def self.trailing_for_current?(chunk)
+    cleaned = clean_description(PaymentMethodDetector.strip(chunk.to_s))
+    cleaned.blank?
+  end
+
+  def self.clean_segment(text)
+    s = text.to_s.strip
+    s = s.sub(/\A(?:y|e|m[aá]s|tambi[eé]n|despu[eé]s|luego|,|;)\s+/i, "")
+    s = s.sub(/\s+(?:y|e|m[aá]s|tambi[eé]n|,|;)\s*\z/i, "")
+    s.gsub(/\s+/, " ").strip
+  end
+
   STRONG_INCOME = /
     \b(
       cobr[eo]|cobré|ingreso|ingres[eé]|
@@ -74,8 +186,10 @@ class ExpenseTextParser
     s = s.gsub("$", " ")
     s = s.gsub(/\b(pesos?|ars|usd|u\$s|u\$d|d[oó]lares?)\b/i, " ")
     s = s.gsub(/\bcada\s+(uno|una)\b/i, " ")
+    s = s.gsub(/\A(?:hoy\s+)?(?:gast[eé]|pagu[eé]|compr[eé]|anot[eé])\s+/i, "")
     s = s.gsub(/\s+/, " ").strip
     s = s.gsub(/\A[-–—:;,]+\s*/, "").gsub(/\s*[-–—:;,]+\z/, "").strip
+    s = s.gsub(/\A(?:en|por|un|una|el|la|los|las|del|al|de)\s+/i, "")
     s
   end
 

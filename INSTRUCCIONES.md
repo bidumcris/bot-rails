@@ -51,6 +51,7 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84.150 |
 | `transferencia 21mil de gime` | **Ingreso** Transferencias $21.000 |
 | `2 menús 9000 cada uno` | **Gasto** Comida $18.000 |
+| `hamburguesa 8500 y coca 2000` | **Dos gastos** (también en una nota de voz) |
 | `pago regalo maestro 10000` | **Gasto** Regalos $10.000 |
 
 ### Ver el mes
