@@ -48,6 +48,7 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | `super 18000 en efectivo` | **Gasto** Comida $18.000 · Efectivo |
 | `netflix 8 usd` | **Gasto** Suscripciones, convierte 8 USD → ARS con venta BNA |
 | `hamburguesa 125000` | **Duda**: una hamburguesa a ~USD 80 no cierra; te pide confirmar o usar $12.500 |
+| `gasté 30 en el médico` | **Duda**: $30 es poco; te pregunta si eran **$30.000** (30 mil) |
 | `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84.150 |
 | `transferencia 21mil de gime` | **Ingreso** Transferencias $21.000 |
 | `2 menús 9000 cada uno` | **Gasto** Comida $18.000 |

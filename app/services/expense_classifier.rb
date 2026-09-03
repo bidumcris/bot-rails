@@ -28,7 +28,7 @@ class ExpenseClassifier
       [/gas\b|metrogas|naturgy/, ["Servicios", "Gas"]],
       [/agua|aysa/, ["Servicios", "Agua"]],
       [/sube|uber|cabify|taxi|colectivo|tren|nafta|combustible/, ["Transporte", nil]],
-      [/farmacia|medico|clínica|obra social|osde|swiss/, ["Salud", nil]],
+      [/farmacia|m[eé]dic[oa]|doctor|dentist|odont[oó]log|consultorio|clínica|obra social|osde|swiss/, ["Salud", nil]],
       [/netflix|spotify|youtube|disney|prime|hbo|\bmax\b|flow|crunchyroll|chatgpt|icloud|google\s*one|suscrip/, ["Suscripciones", nil]]
     ]
 

@@ -35,17 +35,24 @@ class AmountSanityChecker
     [/suscrip|subscription|premium/, 2.0..30.0, "una suscripción"],
     [/uber|cabify|taxi|didi/, 1.5..25.0, "un viaje"],
     [/colectivo|subte|\bsube\b|\btren\b/, 0.2..3.0, "el transporte"],
-    [/nafta|combustible|\bypf\b|\bshell\b|axion/, 8.0..80.0, "nafta"]
+    [/nafta|combustible|\bypf\b|\bshell\b|axion/, 8.0..80.0, "nafta"],
+    [/m[eé]dic[oa]|doctor|doctora|consultorio|consulta/, 12.0..90.0, "una consulta médica"],
+    [/dentist|odont[oó]log/, 15.0..120.0, "el dentista"],
+    [/psic[oó]log|psiquiatra|terapia/, 15.0..80.0, "la consulta"],
+    [/farmacia|remedio|medicament/, 3.0..40.0, "la farmacia"]
   ].freeze
 
   CATEGORY_USD = {
     "Comida" => 1.0..40.0,
     "Suscripciones" => 2.0..30.0,
     "Transporte" => 0.4..40.0,
-    "Ocio" => 1.0..80.0
+    "Ocio" => 1.0..80.0,
+    "Salud" => 4.0..90.0,
+    "Servicios" => 8.0..150.0
   }.freeze
 
   HIGH_MULTIPLIER = 2.2
+  LOW_FACTOR = 3.0
 
   def self.check(amount_cents:, description:, kind:, category: nil, user: nil, rate: nil)
     new.check(
@@ -78,9 +85,17 @@ class AmountSanityChecker
     return ok if range.nil? || usd.nil?
 
     too_high = usd > range.max * HIGH_MULTIPLIER
-    return ok unless too_high
+    too_low = usd < (range.min / LOW_FACTOR)
 
-    suggestions = build_suggestions(amount_cents, range, rate, history_cents)
+    return ok unless too_high || too_low
+
+    suggestions =
+      if too_low
+        build_low_suggestions(amount_cents, range, rate, history_cents)
+      else
+        build_suggestions(amount_cents, range, rate, history_cents)
+      end
+
     Check.new(
       suspicious: true,
       item_label: label,
@@ -88,7 +103,7 @@ class AmountSanityChecker
       min_usd: range.min,
       max_usd: range.max,
       suggestions: suggestions,
-      reason: :too_high
+      reason: too_low ? :too_low : :too_high
     )
   end
 
@@ -97,6 +112,29 @@ class AmountSanityChecker
   def match_item(description)
     d = description.to_s.downcase
     ITEMS.find { |re, _, _| d.match?(re) }
+  end
+
+  def build_low_suggestions(amount_cents, range, rate, history_cents)
+    candidates = [1000, 100].filter_map do |mult|
+      cents = amount_cents.to_i * mult
+      usd = BnaOfficialDollar.ars_to_usd(cents, rate: rate)
+      next unless usd && range.cover?(usd)
+
+      Suggestion.new(amount_cents: cents, usd: usd)
+    end
+
+    if history_cents.to_i.positive?
+      usd = BnaOfficialDollar.ars_to_usd(history_cents, rate: rate)
+      if usd && range.cover?(usd) && candidates.none? { |s| s.amount_cents == history_cents }
+        candidates << Suggestion.new(amount_cents: history_cents, usd: usd)
+      end
+    end
+
+    pesos = amount_cents.to_i / 100.0
+    if pesos <= 500
+      candidates.sort_by! { |s| s.amount_cents == amount_cents.to_i * 1000 ? 0 : 1 }
+    end
+    candidates.uniq(&:amount_cents).first(2)
   end
 
   def build_suggestions(amount_cents, range, rate, history_cents)

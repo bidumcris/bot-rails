@@ -22,7 +22,7 @@ HELP_TEXT = <<~TXT.strip
   • hamburguesa 8500 y coca 2000
   • 🎤 una nota de voz diciendo lo mismo
 
-  Si un monto se ve raro (hamburguesa a $125.000, Netflix carísimo), te pregunto antes de guardar.
+  Si un monto se ve raro (hamburguesa a $125.000, o “30 en el médico” que parecen 30 mil), te pregunto antes de guardar.
 
   Consultas:
   • /resumen — mes actual (ingresos, gastos, balance)
@@ -364,7 +364,11 @@ end
 def suspicious_message(check, amount_cents, description, rate)
   item = check.item_label.presence || description
   lines = ["🤔 ¿Está bien el monto?", ""]
-  lines << "#{item.to_s.capitalize} a #{format_money(amount_cents, rate: rate)} se me hace caro."
+  if check.reason.to_s == "too_low"
+    lines << "#{item.to_s.capitalize} a #{format_money(amount_cents, rate: rate)} se me hace barato."
+  else
+    lines << "#{item.to_s.capitalize} a #{format_money(amount_cents, rate: rate)} se me hace caro."
+  end
   if check.min_usd && check.max_usd && rate&.venta.to_f.positive?
     min_ars = BnaOfficialDollar.usd_to_ars_cents(check.min_usd, rate: rate)
     max_ars = BnaOfficialDollar.usd_to_ars_cents(check.max_usd, rate: rate)
@@ -373,9 +377,19 @@ def suspicious_message(check, amount_cents, description, rate)
   if check.suggestions.any?
     sug = check.suggestions.first
     lines << ""
-    lines << "¿Era #{format_money(sug.amount_cents, rate: rate)}?"
+    lines << low_amount_question(amount_cents, sug.amount_cents, rate)
   end
   lines.join("\n")
+end
+
+def low_amount_question(original_cents, suggested_cents, rate)
+  formatted = format_money(suggested_cents, rate: rate)
+  if suggested_cents == original_cents.to_i * 1000
+    pesos = original_cents.to_i / 100
+    "¿Eran #{formatted} (#{pesos} mil)?"
+  else
+    "¿Era #{formatted}?"
+  end
 end
 
 def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil, payment_method: nil)
