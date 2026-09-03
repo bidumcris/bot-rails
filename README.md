@@ -9,7 +9,6 @@ Ver **[INSTRUCCIONES.md](./INSTRUCCIONES.md)** — comandos, arranque, monitoreo
 ## Setup rápido
 
 ```bash
-cd /home/koma/dev/bot
 bundle install
 bin/rails db:prepare
 cp env.example .env   # completar TELEGRAM_BOT_TOKEN

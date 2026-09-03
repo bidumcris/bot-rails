@@ -10,7 +10,6 @@ systemctl --user start ollama
 ollama ps
 
 # 2) Bot de Telegram
-cd /home/koma/dev/bot
 bundle exec ruby bin/telegram_bot
 ```
 
@@ -23,7 +22,6 @@ Variables en `.env` (ver `env.example`):
 Panel web (opcional):
 
 ```bash
-cd /home/koma/dev/bot
 bin/rails s
 # http://localhost:3000
 ```
@@ -91,25 +89,20 @@ journalctl --user -u ollama -f
 
 ```bash
 pkill -f 'bin/telegram_bot'
-cd /home/koma/dev/bot
 bundle exec ruby bin/telegram_bot
 ```
 
 ---
 
-## Deploy híbrido (Oracle + notebook)
+## Deploy híbrido (VPS + notebook)
 
-Tu VM Oracle `VM.Standard.A1.Flex` (4 OCPU / 24 GB, IP `165.1.121.75`) corre el **bot**.  
-La **IA** queda en esta notebook vía túnel SSH.
+El **bot** corre en un VPS. La **IA** queda en la notebook vía túnel SSH.
 
-Guía completa: **[DEPLOY_ORACLE.md](./DEPLOY_ORACLE.md)**  
-Plan de cobro (todavía no activo): **[MONETIZACION.md](./MONETIZACION.md)**
-
-Resumen:
+Guía: **[DEPLOY_ORACLE.md](./DEPLOY_ORACLE.md)**
 
 ```bash
-# En Oracle: Rails + bin/telegram_bot (siempre)
-# En notebook (cuando quieras IA):
+# En el VPS: Rails + bin/telegram_bot (siempre)
+# En la notebook (cuando quieras IA):
 systemctl --user start ollama
 ./script/tunnel_ollama_to_oracle.sh
 ```

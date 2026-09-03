@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Túnel: Ollama de la notebook → localhost:11434 en la VM Oracle
+# Túnel: Ollama de la notebook → localhost:11434 en el VPS
 # Uso: ./script/tunnel_ollama_to_oracle.sh
+# Destino: Host de ~/.ssh/config (default: bot). No hardcodear IP.
 set -euo pipefail
 
-ORACLE_HOST="${ORACLE_HOST:-165.1.121.75}"
-# Host SSH local: "bot" (ubuntu). Override: ORACLE_USER=ubuntu ORACLE_HOST=bot
-ORACLE_USER="${ORACLE_USER:-ubuntu}"
 SSH_TARGET="${SSH_TARGET:-bot}"
 LOCAL_OLLAMA="${LOCAL_OLLAMA:-127.0.0.1:11434}"
 REMOTE_PORT="${REMOTE_PORT:-11434}"
@@ -17,7 +15,7 @@ if ! curl -sf "http://${LOCAL_OLLAMA}/api/tags" >/dev/null; then
   exit 1
 fi
 
-echo "Abriendo túnel SSH (no toca Caddy ni Pilates)..."
+echo "Abriendo túnel SSH (Ollama solo en localhost del VPS)..."
 echo "  destino: ${SSH_TARGET}  remote:${REMOTE_PORT} → local ${LOCAL_OLLAMA}"
 echo "Dejá esta terminal abierta. Ctrl+C para cortar."
 echo
