@@ -12,7 +12,7 @@ module ProPlan
   end
 
   def free_movements
-    ENV.fetch("PRO_FREE_MOVEMENTS", "40").to_i
+    ENV.fetch("PRO_FREE_MOVEMENTS", "15").to_i
   end
 
   def price_ars

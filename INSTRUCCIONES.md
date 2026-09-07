@@ -111,7 +111,7 @@ systemctl --user start ollama
 
 ## Plan gratis y Pro
 
-- **Gratis:** texto, foto, `/resumen`, `/dolar`. **40 movimientos por mes** (calendario, zona Buenos Aires).
+- **Gratis:** texto, foto, `/resumen`, `/dolar`. **15 movimientos por mes** (calendario, zona Buenos Aires).
 - **Prueba:** `/pro` activa **5 días** de Pro, una sola vez.
 - **Pro:** voz, PDF, IA, duda de montos, dólar en cada carga, sin tope. **$2.499 ARS / 30 días** por Mercado Pago (`/pro`).
 

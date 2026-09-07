@@ -13,7 +13,7 @@ El plan gratis sigue pudiendo anotar gastos por texto, con un tope mensual.
 | Foto de comprobante | Sí | Sí |
 | `/resumen` `/septiembre` `/dolar` | Sí | Sí |
 | `/movimientos` | Últimos 10 | Últimos 10 |
-| Tope de movimientos por mes | **40** | Sin tope |
+| Tope de movimientos por mes | **15** | Sin tope |
 | Nota de voz | No → `/pro` | Sí |
 | `/reporte` PDF | No → `/pro` | Sí |
 | IA (Ollama) | No; reglas | Sí |
@@ -30,7 +30,7 @@ El plan gratis sigue pudiendo anotar gastos por texto, con un tope mensual.
 |--|--|
 | Trial | **5 días** Pro, una vez, con `/pro` |
 | Pro | **$2.499 ARS** por **30 días** (Mercado Pago) |
-| Gratis | 40 movimientos / mes calendario (zona Buenos Aires) |
+| Gratis | 15 movimientos / mes calendario (zona Buenos Aires) |
 
 No es una suscripción que MP debita sola (todavía). Cada mes el usuario entra a `/pro` y paga de nuevo. El bot suma 30 días a `pro_until`.
 
@@ -55,11 +55,11 @@ El checkout **no** vive adentro de Telegram: es un link HTTPS a MP. El bot no ab
 
 `user.expenses` del **mes calendario actual** (`Time.zone` = Buenos Aires).
 
-- Si `count >= 40` y no es Pro → no guarda el 41. Mensaje: tocá `/pro`.
+- Si `count >= 15` y no es Pro → no guarda el 16. Mensaje: tocá `/pro`.
 - El 1° de cada mes el contador vuelve a 0.
 - Pro (`pro_until` futuro o lista blanca) no tiene tope.
 
-No es “40 cada 30 días desde el alta”. Es **por mes de calendario**, más simple de explicar.
+No es “15 cada 30 días desde el alta”. Es **por mes de calendario**, más simple de explicar.
 
 Pro pago: `pro_until = max(ahora, pro_until) + 30 días`. Si paga antes de vencer, se **acumula**.
 
@@ -76,7 +76,7 @@ En Mercado Pago (cuenta de productor):
 ```
 PRO_TRIAL_DAYS=5
 PRO_PAID_DAYS=30
-PRO_FREE_MOVEMENTS=40
+PRO_FREE_MOVEMENTS=15
 PRO_PRICE_ARS=2499
 PRO_TELEGRAM_IDS=tu_id   # lo ves en /perfil o en la tabla users
 MP_ACCESS_TOKEN=APP_USR-...
@@ -92,7 +92,7 @@ Sin `MP_ACCESS_TOKEN` igual funcionan trial y tope; `/pro` no puede cobrar.
 
 ## 6. Cómo se lo contamos
 
-> Plan gratis: anotás gastos por texto (40 por mes).  
+> Plan gratis: anotás gastos por texto (15 por mes).  
 > Pro ($2.499 / 30 días): voz, PDF, IA.  
 > 5 días de prueba con `/pro`.
 
@@ -102,7 +102,7 @@ Sin `MP_ACCESS_TOKEN` igual funcionan trial y tope; `/pro` no puede cobrar.
 
 | Ítem | Estado |
 |------|--------|
-| `pro?` / trial 5 días / tope 40 | Hecho |
+| `pro?` / trial 5 días / tope 15 | Hecho |
 | `/pro` + Mercado Pago (pago 30 días) | Hecho (falta tu token MP) |
 | Webhook MP | Hecho (hace falta `PRO_PUBLIC_URL` + Puma/Caddy) |
 | Telegram Stars | No (no hace falta para Argentina) |
