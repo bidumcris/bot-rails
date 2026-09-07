@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_07_131500) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_07_140000) do
   create_table "draft_expenses", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "error"
@@ -47,6 +47,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_07_131500) do
   create_table "users", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "currency", default: "ARS"
+    t.string "display_name"
     t.string "mp_payment_id"
     t.string "mp_preference_id"
     t.string "occupation"

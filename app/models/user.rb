@@ -16,7 +16,7 @@ class User < ApplicationRecord
   before_validation :apply_defaults
 
   def onboarded?
-    occupation.present?
+    occupation.present? && display_name.present?
   end
 
   def needs_onboarding?
@@ -36,6 +36,21 @@ class User < ApplicationRecord
     return "Empleado" if t.match?(/empleado|program|desarroll|sistemas|software|sueldo|dependencia|oficina|trabajo/)
 
     raw.truncate(80)
+  end
+
+  def self.normalize_name(text)
+    raw = text.to_s.strip.gsub(/\s+/, " ")
+    return if raw.blank?
+    return if raw.start_with?("/")
+    return if raw.match?(/\d/)
+    return if OCCUPATIONS.include?(raw)
+    return if raw.split.size > 4
+    return if raw.match?(/\A(hola|buenas|buen\s+d[ií]a|ok|dale|s[ií]|no)\z/i)
+
+    raw = raw.gsub(/\A[¿¡]+|[.!?¡]+\z/, "").strip
+    return if raw.blank?
+
+    raw.split.map { |w| w[0] ? w[0].upcase + w[1..] : w }.join(" ").truncate(40)
   end
 
   def pro?

@@ -49,4 +49,23 @@ class UserProTest < ActiveSupport::TestCase
     @user.start_trial!
     assert @user.can_add_movements?(100)
   end
+
+  test "onboarded requiere nombre y rubro" do
+    assert_not @user.onboarded?
+    @user.update!(occupation: "Empleado")
+    assert @user.needs_onboarding?
+    @user.update!(display_name: "Cristian")
+    assert @user.onboarded?
+    assert_not @user.needs_onboarding?
+  end
+
+  test "normalize_name acepta nombres y rechaza montos" do
+    assert_equal "Cristian", User.normalize_name("cristian")
+    assert_equal "Ana Maria", User.normalize_name("ana maria")
+    assert_nil User.normalize_name("almohadillas 2500")
+    assert_nil User.normalize_name("hamburguesa 8500")
+    assert_nil User.normalize_name("Empleado")
+    assert_nil User.normalize_name("/inicio")
+    assert_nil User.normalize_name("hola")
+  end
 end

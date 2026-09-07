@@ -30,12 +30,11 @@ bin/rails s
 
 ## Comandos en Telegram
 
-Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/reporte` `/movimientos` `/dolar` `/perfil` `/trabajo` `/pro` `/borrarultimo`
+Menú del bot (español): `/inicio` `/ayuda` `/resumen` `/reporte` `/movimientos` `/dolar` `/perfil` `/nombre` `/trabajo` `/pro` `/borrarultimo`
 
 ### Al empezar
 
-`/inicio` pregunta **a qué te dedicás** (Empleado, Docente, Vendedor, Estudiante, Otro).  
-Eso ayuda a clasificar cobros vs gastos. Se cambia con `/trabajo`.
+`/inicio` pregunta **cómo te llamás** y **a qué te dedicás**. El bot te habla por tu nombre. El nombre se cambia con `/nombre`.
 
 ### Registrar un gasto o ingreso
 
@@ -44,13 +43,13 @@ Escribí en lenguaje natural (pesos ARS o dólares):
 | Ejemplo | Qué hace |
 |---------|----------|
 | `hamburguesa 8500` | **Gasto** Comida $8.500 (y el equivalente en USD oficial BNA) |
-| `almohadillas 2500 por transferencia de mercadopago` | **Gasto** Comida $2.500 · Mercado Pago |
+| `super 18000 por transferencia de mercadopago` | **Gasto** Comida $18.000 · Mercado Pago |
 | `super 18000 en efectivo` | **Gasto** Comida $18.000 · Efectivo |
 | `netflix 8 usd` | **Gasto** Suscripciones, convierte 8 USD → ARS con venta BNA |
 | `hamburguesa 125000` | **Duda**: una hamburguesa a ~USD 80 no cierra; te pide confirmar o usar $12.500 |
 | `gasté 30 en el médico` | **Duda**: $30 es poco; te pregunta si eran **$30.000** (30 mil) |
-| `cobro 84150 servicio pilates` | **Ingreso** Trabajo $84.150 |
-| `transferencia 21mil de gime` | **Ingreso** Transferencias $21.000 |
+| `cobro 25000` | **Ingreso** Trabajo $25.000 |
+| `transferencia 21000` | **Ingreso** Transferencias $21.000 |
 | `2 menús 9000 cada uno` | **Gasto** Comida $18.000 |
 | `hamburguesa 8500 y coca 2000` | **Dos gastos** (también en una nota de voz) |
 | `pago regalo maestro 10000` | **Gasto** Regalos $10.000 |
@@ -120,7 +119,7 @@ Tu usuario puede ir siempre Pro con `PRO_TELEGRAM_IDS` en `.env`.
 ## Tips
 
 - El monto se parsea de forma fija (`8500`, `23.000`, `23k`, `8 usd`). La IA (Ollama 3B) ayuda sobre todo a **categorizar**.
-- Si decís cómo pagaste (`por transferencia de mercadopago`, `en efectivo`, `con débito`), se guarda el **medio de pago**. “Pagué por transferencia” es gasto; “transferencia de gime” sigue siendo ingreso.
+- Si decís cómo pagaste (`por transferencia de mercadopago`, `en efectivo`, `con débito`), se guarda el **medio de pago**. “Pagué por transferencia” es gasto; “transferencia 21000” sigue siendo ingreso.
 - Las **notas de voz** se transcriben en la VM (Whisper `base`, español) y después se tratan como texto. Máx. 45 s.
 - Los montos se muestran también en **USD oficial Banco Nación** (venta). Si un gasto conocido (comida, suscripciones, etc.) queda muy por encima de lo habitual, el bot **pregunta antes de guardar**.
 - Zona horaria: `Buenos Aires` (los meses se cortan con esa zona).

@@ -12,12 +12,11 @@ abort "Falta TELEGRAM_BOT_TOKEN (pegá solo el token tipo 123:ABC...)" if token.
 HELP_TEXT = <<~TXT.strip
   🧾 Bot de gastos e ingresos (ARS + dólar oficial BNA)
 
-  Registrar (texto, nota de voz o foto de comprobante):
+  Registrar (texto, nota de voz o foto):
   • hamburguesa 8500
-  • almohadillas 2500 por transferencia de mercadopago
+  • super 18000 en efectivo
   • netflix 8 usd
-  • cobro 84150 servicio pilates
-  • transferencia 21mil de gime
+  • cobro 25000
   • 2 menús 9000 cada uno
   • hamburguesa 8500 y coca 2000
   • 🎤 una nota de voz diciendo lo mismo
@@ -30,10 +29,11 @@ HELP_TEXT = <<~TXT.strip
   • /septiembre — un mes
   • /movimientos — últimos 10
   • /dolar — cotización oficial Banco Nación
-  • /perfil — tu rubro de trabajo
+  • /perfil — tu perfil
 
   Otros:
   • /trabajo — cambiar a qué te dedicás
+  • /nombre — cambiar cómo te llamo
   • /pro — prueba de #{ProPlan.trial_days} días o Pro #{ProPlan.price_label}/mes
   • /borrarultimo — deshacer el último movimiento
   • /ayuda — esta ayuda
@@ -48,6 +48,7 @@ SPANISH_COMMANDS = [
   Telegram::Bot::Types::BotCommand.new(command: "reporte", description: "PDF del mes actual"),
   Telegram::Bot::Types::BotCommand.new(command: "movimientos", description: "Últimos 10 movimientos"),
   Telegram::Bot::Types::BotCommand.new(command: "perfil", description: "Ver tu perfil"),
+  Telegram::Bot::Types::BotCommand.new(command: "nombre", description: "Cambiar cómo te llamo"),
   Telegram::Bot::Types::BotCommand.new(command: "trabajo", description: "Cambiar a qué te dedicás"),
   Telegram::Bot::Types::BotCommand.new(command: "dolar", description: "Dólar oficial Banco Nación"),
   Telegram::Bot::Types::BotCommand.new(command: "pro", description: "Prueba y plan Pro"),
@@ -109,11 +110,101 @@ def remove_keyboard
   Telegram::Bot::Types::ReplyKeyboardRemove.new(remove_keyboard: true)
 end
 
-def ask_occupation(bot, chat_id, intro: true)
+def with_name(user, text)
+  name = user&.display_name.to_s.strip
+  return text if name.blank?
+
+  "#{name}, #{text}"
+end
+
+def ask_name(bot, chat_id, suggested: nil)
+  kb =
+    if suggested.present?
+      Telegram::Bot::Types::ReplyKeyboardMarkup.new(
+        keyboard: [[btn(suggested)]],
+        resize_keyboard: true,
+        one_time_keyboard: true
+      )
+    end
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: suggested.present? ? "¿Cómo te llamás? Si querés, tocá #{suggested}." : "¿Cómo te llamás?",
+    reply_markup: kb
+  )
+end
+
+def finish_onboarding(bot, chat_id, user)
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: with_name(user, "perfecto. Rubro: #{user.occupation}.\n\n#{HELP_TEXT}"),
+    reply_markup: remove_keyboard
+  )
+end
+
+def handle_onboarding(bot, message, user, text)
+  suggested = message.from&.first_name.to_s.strip.presence
+
+  if user.display_name.blank? || user.onboarding_step == "ask_name"
+    if text.start_with?("/") || text.blank?
+      user.update!(onboarding_step: "ask_name")
+      ask_name(bot, message.chat.id, suggested: suggested)
+      return
+    end
+
+    name = User.normalize_name(text)
+    unless name
+      bot.api.send_message(chat_id: message.chat.id, text: "Decime solo tu nombre (sin montos).")
+      ask_name(bot, message.chat.id, suggested: suggested)
+      return
+    end
+
+    user.update!(display_name: name, onboarding_step: user.occupation.present? ? nil : "ask_occupation")
+    if user.occupation.present?
+      bot.api.send_message(
+        chat_id: message.chat.id,
+        text: "Listo, te digo #{name}.",
+        reply_markup: remove_keyboard
+      )
+    else
+      bot.api.send_message(chat_id: message.chat.id, text: with_name(user, "un gusto."), reply_markup: remove_keyboard)
+      ask_occupation(bot, message.chat.id, intro: false, user: user)
+    end
+    return
+  end
+
+  if text.start_with?("/") && text.present?
+    bot.api.send_message(chat_id: message.chat.id, text: with_name(user, "primero decime a qué te dedicás (podés escribirlo)."))
+    ask_occupation(bot, message.chat.id, intro: false, user: user)
+    return
+  end
+
+  if text.blank?
+    ask_occupation(bot, message.chat.id, intro: false, user: user)
+    return
+  end
+
+  if text == "Otro"
+    user.update!(onboarding_step: "ask_occupation_detail")
+    bot.api.send_message(chat_id: message.chat.id, text: with_name(user, "contame en una frase a qué te dedicás."), reply_markup: remove_keyboard)
+    return
+  end
+
+  occupation = User.normalize_occupation(text)
+  if occupation.present?
+    user.update!(occupation: occupation, onboarding_step: nil)
+    finish_onboarding(bot, message.chat.id, user)
+    return
+  end
+
+  user.update!(onboarding_step: "ask_occupation") unless user.onboarding_step.present?
+  ask_occupation(bot, message.chat.id, user: user)
+end
+
+def ask_occupation(bot, chat_id, intro: true, user: nil)
   prefix = intro ? "Para categorizar mejor tus cobros y gastos, " : ""
   bot.api.send_message(
     chat_id: chat_id,
-    text: "#{prefix}¿a qué te dedicás?",
+    text: with_name(user, "#{prefix}¿a qué te dedicás?"),
     reply_markup: occupation_keyboard
   )
 end
@@ -123,6 +214,7 @@ def send_profile(bot, chat_id, user)
   rate = BnaOfficialDollar.current
   lines = [
     "👤 Perfil",
+    "Nombre: #{user.display_name.presence || "todavía no lo cargaste"}",
     "Rubro: #{rubro}",
     "Moneda: #{user.currency}",
     "Zona: #{user.time_zone}",
@@ -144,6 +236,10 @@ def upgrade_text(feature: nil)
   "#{head}\n#{ProPlan.trial_days} días de prueba o #{ProPlan.price_label}/mes con Mercado Pago.\nTocá /pro"
 end
 
+def named_upgrade(user, feature: nil)
+  with_name(user, upgrade_text(feature: feature))
+end
+
 def send_pro(bot, chat_id, user)
   MercadoPagoCheckout.sync_user!(user)
   user.reload
@@ -153,10 +249,10 @@ def send_pro(bot, chat_id, user)
 
   lines = []
   if started_trial
-    lines << "Listo: #{ProPlan.trial_days} días de Pro (voz, PDF, IA, sin tope)."
+    lines << with_name(user, "listo: #{ProPlan.trial_days} días de Pro (voz, PDF, IA, sin tope).")
     lines << "Hasta #{user.pro_until.in_time_zone.strftime('%d/%m %H:%M')}."
   elsif user.pro?
-    lines << "Ya estás en Pro."
+    lines << with_name(user, "ya estás en Pro.")
     lines << user.plan_label
   else
     lines << "Plan gratis: #{user.movements_this_month}/#{ProPlan.free_movements} movimientos este mes."
@@ -322,7 +418,7 @@ end
 
 def send_pdf_report(bot, chat_id, user, query_text)
   unless user.pro?
-    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :pdf))
+    bot.api.send_message(chat_id: chat_id, text: named_upgrade(user, feature: :pdf))
     return
   end
   range = ExpenseMonthSummary.parse_month_query(query_text)
@@ -430,7 +526,7 @@ def saved_message(expense, prefix: nil)
   head = [prefix, kind_label(expense.kind)].compact.join(" ")
   pay = expense.user&.pro? && expense.payment_method.present? ? " · #{expense.payment_method}" : ""
   amount = expense.user&.pro? ? format_money(expense.amount_cents) : format_ars(expense.amount_cents)
-  "#{head}: #{amount} — #{[expense.category, expense.subcategory].compact.join(" / ")}#{pay} — #{expense.description}"
+  with_name(expense.user, "#{head}: #{amount} — #{[expense.category, expense.subcategory].compact.join(" / ")}#{pay} — #{expense.description}")
 end
 
 def clear_open_drafts(user)
@@ -481,7 +577,7 @@ end
 
 def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil, payment_method: nil)
   unless user.can_add_movements?(1)
-    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota))
+    bot.api.send_message(chat_id: chat_id, text: named_upgrade(user, feature: :quota))
     return
   end
   rate = BnaOfficialDollar.current
@@ -563,7 +659,7 @@ def handle_confirmation(bot, chat_id, user, text)
   return :ignore unless chosen.to_i.positive?
 
   unless user.can_add_movements?(1)
-    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota), reply_markup: remove_keyboard)
+    bot.api.send_message(chat_id: chat_id, text: named_upgrade(user, feature: :quota), reply_markup: remove_keyboard)
     return :handled
   end
 
@@ -628,7 +724,7 @@ def ask_confirmation_for(bot, chat_id, user, raw_text:, movement:, check:, metad
   )
   bot.api.send_message(
     chat_id: chat_id,
-    text: suspicious_message(check, movement[:amount_cents], movement[:description], BnaOfficialDollar.current),
+    text: with_name(user, suspicious_message(check, movement[:amount_cents], movement[:description], BnaOfficialDollar.current)),
     reply_markup: confirmation_keyboard(check.suggestions)
   )
 end
@@ -683,7 +779,7 @@ def save_movements(bot, chat_id, user, movements, raw_text:, metadata: {}, prefi
   unless user.pro?
     left = user.free_movements_left
     if left <= 0
-      bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota))
+      bot.api.send_message(chat_id: chat_id, text: named_upgrade(user, feature: :quota))
       return
     end
     if payable.size > left
@@ -731,7 +827,7 @@ def save_movements(bot, chat_id, user, movements, raw_text:, metadata: {}, prefi
   end
 
   if saved.any?
-    lines = ["Guardé #{saved.size} #{saved.size == 1 ? "movimiento" : "movimientos"}:"]
+    lines = [with_name(user, "guardé #{saved.size} #{saved.size == 1 ? "movimiento" : "movimientos"}:")]
     saved.each { |expense| lines << "• #{saved_message(expense, prefix: prefix)}" }
     bot.api.send_message(
       chat_id: chat_id,
@@ -861,7 +957,7 @@ def handle_natural_text(bot, chat_id, user, text, ai, metadata: {})
       extracted: { "description" => description, "kind" => kind, "payment_method" => payment_method },
       state: "awaiting_amount"
     )
-    bot.api.send_message(chat_id: chat_id, text: "¿Cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd.")
+    bot.api.send_message(chat_id: chat_id, text: with_name(user, "¿cuánto fue el monto en ARS para: \"#{description}\"? También sirve 8 usd."))
     return
   end
 
@@ -890,7 +986,7 @@ end
 
 def handle_voice(bot, token, message, user, ai)
   unless user.pro?
-    bot.api.send_message(chat_id: message.chat.id, text: upgrade_text(feature: :voice))
+    bot.api.send_message(chat_id: message.chat.id, text: named_upgrade(user, feature: :voice))
     return
   end
 
@@ -1041,42 +1137,16 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      if user.needs_onboarding? && !%w[inicio start ayuda help pro].include?(cmd)
-        if text.start_with?("/") && text.present?
-          bot.api.send_message(chat_id: message.chat.id, text: "Primero decime a qué te dedicás (podés escribirlo, ej: soy programador).")
-          ask_occupation(bot, message.chat.id, intro: false)
-          next
-        end
-
-        if text.blank?
-          ask_occupation(bot, message.chat.id, intro: false)
-          next
-        end
-
-        if text == "Otro"
-          user.update!(onboarding_step: "ask_occupation_detail")
-          bot.api.send_message(chat_id: message.chat.id, text: "Contame en una frase a qué te dedicás.", reply_markup: remove_keyboard)
-          next
-        end
-
-        occupation = User.normalize_occupation(text)
-        if occupation.present?
-          user.update!(occupation: occupation, onboarding_step: nil)
-          bot.api.send_message(chat_id: message.chat.id, text: "Perfecto, rubro: #{occupation}.\n\n#{HELP_TEXT}", reply_markup: remove_keyboard)
-          next
-        end
-
-        user.update!(onboarding_step: "ask_occupation") unless user.onboarding_step.present?
-        ask_occupation(bot, message.chat.id)
+      if user.needs_onboarding? && !%w[ayuda help pro].include?(cmd)
+        handle_onboarding(bot, message, user, text)
         next
       end
 
       if %w[inicio start].include?(cmd)
         if user.onboarded?
-          bot.api.send_message(chat_id: message.chat.id, text: "Hola de nuevo (#{user.occupation}).\n\n#{HELP_TEXT}")
+          bot.api.send_message(chat_id: message.chat.id, text: with_name(user, "hola de nuevo.\n\n#{HELP_TEXT}"))
         else
-          user.update!(onboarding_step: "ask_occupation")
-          ask_occupation(bot, message.chat.id)
+          handle_onboarding(bot, message, user, text)
         end
         next
       end
@@ -1088,6 +1158,12 @@ Telegram::Bot::Client.run(token) do |bot|
 
       if %w[pro].include?(cmd)
         send_pro(bot, message.chat.id, user)
+        next
+      end
+
+      if %w[nombre].include?(cmd)
+        user.update!(onboarding_step: "ask_name")
+        ask_name(bot, message.chat.id, suggested: message.from&.first_name.to_s.strip.presence)
         next
       end
 
@@ -1103,7 +1179,7 @@ Telegram::Bot::Client.run(token) do |bot|
 
       if %w[trabajo].include?(cmd)
         user.update!(onboarding_step: "ask_occupation")
-        ask_occupation(bot, message.chat.id, intro: false)
+        ask_occupation(bot, message.chat.id, intro: false, user: user)
         next
       end
 
