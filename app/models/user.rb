@@ -38,6 +38,61 @@ class User < ApplicationRecord
     raw.truncate(80)
   end
 
+  def pro?
+    return true if ProPlan.whitelisted?(telegram_user_id)
+
+    pro_until.present? && pro_until > Time.current
+  end
+
+  def trial_available?
+    trial_used_at.blank? && !pro? && !ProPlan.whitelisted?(telegram_user_id)
+  end
+
+  def start_trial!
+    return false unless trial_available?
+
+    update!(
+      trial_used_at: Time.current,
+      pro_until: ProPlan.trial_days.days.from_now,
+      pro_source: "trial"
+    )
+    true
+  end
+
+  def grant_pro!(source:, payment_id: nil, days: ProPlan.paid_days)
+    base = [pro_until, Time.current].compact.max
+    attrs = {
+      pro_until: base + days.days,
+      pro_source: source.to_s
+    }
+    attrs[:mp_payment_id] = payment_id.to_s if payment_id.present?
+    update!(attrs)
+  end
+
+  def movements_this_month
+    now = Time.zone.now
+    expenses.where(spent_at: now.beginning_of_month..now.end_of_month).count
+  end
+
+  def free_movements_left
+    return Float::INFINITY if pro?
+
+    [ProPlan.free_movements - movements_this_month, 0].max
+  end
+
+  def can_add_movements?(count = 1)
+    return true if pro?
+
+    free_movements_left >= count.to_i
+  end
+
+  def plan_label
+    return "Pro (tester)" if ProPlan.whitelisted?(telegram_user_id)
+    return "Pro hasta #{pro_until.in_time_zone.strftime('%d/%m %H:%M')}" if pro?
+
+    "Gratis (#{movements_this_month}/#{ProPlan.free_movements} este mes)"
+  end
+
   private
 
   def apply_defaults

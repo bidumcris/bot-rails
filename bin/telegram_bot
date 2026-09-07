@@ -34,6 +34,7 @@ HELP_TEXT = <<~TXT.strip
 
   Otros:
   • /trabajo — cambiar a qué te dedicás
+  • /pro — prueba de #{ProPlan.trial_days} días o Pro #{ProPlan.price_label}/mes
   • /borrarultimo — deshacer el último movimiento
   • /ayuda — esta ayuda
 
@@ -49,6 +50,7 @@ SPANISH_COMMANDS = [
   Telegram::Bot::Types::BotCommand.new(command: "perfil", description: "Ver tu perfil"),
   Telegram::Bot::Types::BotCommand.new(command: "trabajo", description: "Cambiar a qué te dedicás"),
   Telegram::Bot::Types::BotCommand.new(command: "dolar", description: "Dólar oficial Banco Nación"),
+  Telegram::Bot::Types::BotCommand.new(command: "pro", description: "Prueba y plan Pro"),
   Telegram::Bot::Types::BotCommand.new(command: "borrarultimo", description: "Borrar el último movimiento"),
   Telegram::Bot::Types::BotCommand.new(command: "telefono", description: "Asociar tu número")
 ].freeze
@@ -124,10 +126,68 @@ def send_profile(bot, chat_id, user)
     "Rubro: #{rubro}",
     "Moneda: #{user.currency}",
     "Zona: #{user.time_zone}",
+    "Plan: #{user.plan_label}",
     Brand::CREDIT
   ]
   lines << dollar_rate_line(rate) if rate
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
+end
+
+def upgrade_text(feature: nil)
+  head =
+    case feature
+    when :voice then "Las notas de voz son Pro."
+    when :pdf then "El PDF es Pro."
+    when :quota then "Llegaste a los #{ProPlan.free_movements} movimientos de este mes en el plan gratis."
+    else "Eso es Pro."
+    end
+  "#{head}\n#{ProPlan.trial_days} días de prueba o #{ProPlan.price_label}/mes con Mercado Pago.\nTocá /pro"
+end
+
+def send_pro(bot, chat_id, user)
+  MercadoPagoCheckout.sync_user!(user)
+  user.reload
+
+  if user.start_trial!
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: "Listo: #{ProPlan.trial_days} días de Pro (voz, PDF, IA, sin tope).\nHasta #{user.pro_until.in_time_zone.strftime('%d/%m %H:%M')}.\nCuando se venza, /pro de nuevo para pagar #{ProPlan.price_label} por #{ProPlan.paid_days} días."
+    )
+    return
+  end
+
+  if user.pro?
+    bot.api.send_message(chat_id: chat_id, text: "Ya estás en Pro.\n#{user.plan_label}")
+    return
+  end
+
+  unless MercadoPagoCheckout.enabled?
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: "El plan gratis tiene #{ProPlan.free_movements} movimientos por mes. Pro (voz, PDF, IA, sin tope) se paga por Mercado Pago. El cobro todavía se está activando."
+    )
+    return
+  end
+
+  result = MercadoPagoCheckout.create_preference(user)
+  unless result.ok
+    bot.api.send_message(chat_id: chat_id, text: "No pude armar el pago ahora. Probá de nuevo en un rato.")
+    return
+  end
+
+  kb = Telegram::Bot::Types::InlineKeyboardMarkup.new(
+    inline_keyboard: [[
+      Telegram::Bot::Types::InlineKeyboardButton.new(
+        text: "Pagar #{ProPlan.price_label} con Mercado Pago",
+        url: result.url
+      )
+    ]]
+  )
+  bot.api.send_message(
+    chat_id: chat_id,
+    text: "Plan gratis: #{user.movements_this_month}/#{ProPlan.free_movements} movimientos este mes.\nPro: #{ProPlan.price_label} por #{ProPlan.paid_days} días (voz, PDF, IA, sin tope).\nPagá y después tocá /pro otra vez para activarlo.",
+    reply_markup: kb
+  )
 end
 
 def dollar_rate_line(rate)
@@ -170,7 +230,27 @@ def resolve_amount_and_kind(text, extracted)
   [amount_cents, description, kind, payment_method]
 end
 
+def extract_for(user, text, ai)
+  extract_all_for(user, text, ai).first
+end
+
 def extract_all_for(user, text, ai)
+  unless user.pro?
+    return [
+      ExpenseAiExtractor::Extraction.new(
+        amount_cents: nil,
+        description: text.to_s,
+        category: nil,
+        subcategory: nil,
+        confidence: 0.0,
+        provider: "rules",
+        model: nil,
+        kind: ExpenseTextParser.detect_kind(text),
+        payment_method: PaymentMethodDetector.detect(text)
+      )
+    ]
+  end
+
   ai.extract_all(text, currency: user.currency, occupation: user.occupation)
 end
 
@@ -235,6 +315,10 @@ def classify_entry(description, kind, extracted)
 end
 
 def send_pdf_report(bot, chat_id, user, query_text)
+  unless user.pro?
+    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :pdf))
+    return
+  end
   range = ExpenseMonthSummary.parse_month_query(query_text)
   if range.nil?
     bot.api.send_message(
@@ -291,16 +375,12 @@ def send_recent(bot, chat_id, user, limit: 10)
   expenses.each do |e|
     day = e.spent_at.in_time_zone.strftime("%d/%m")
     sign = e.income? ? "+" : "-"
-    usd = e.metadata.is_a?(Hash) ? e.metadata.dig("bna", "usd") || e.metadata.dig(:bna, :usd) : nil
+    usd = user.pro? && e.metadata.is_a?(Hash) ? e.metadata.dig("bna", "usd") || e.metadata.dig(:bna, :usd) : nil
     usd_txt = usd ? " (#{MoneyFormat.usd(usd.to_f)})" : ""
-    pay = e.payment_method.present? ? " · #{e.payment_method}" : ""
+    pay = user.pro? && e.payment_method.present? ? " · #{e.payment_method}" : ""
     lines << "• #{day} #{sign}#{format_ars(e.amount_cents)}#{usd_txt} — #{kind_label(e.kind)}/#{e.category}#{pay} — #{e.description}"
   end
   bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
-end
-
-def extract_for(user, text, ai)
-  ai.extract(text, currency: user.currency, occupation: user.occupation)
 end
 
 def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, payment_method: nil)
@@ -320,7 +400,7 @@ def persist_movement(user, amount_cents:, description:, kind:, extracted:, raw_t
     llm_provider: extracted&.provider,
     llm_model: extracted&.model,
     llm_confidence: cat.confidence,
-    metadata: dollar_metadata(amount_cents, metadata)
+    metadata: user.pro? ? dollar_metadata(amount_cents, metadata) : (metadata || {}).transform_keys(&:to_s)
   )
 end
 
@@ -342,8 +422,9 @@ end
 
 def saved_message(expense, prefix: nil)
   head = [prefix, kind_label(expense.kind)].compact.join(" ")
-  pay = expense.payment_method.present? ? " · #{expense.payment_method}" : ""
-  "#{head}: #{format_money(expense.amount_cents)} — #{[expense.category, expense.subcategory].compact.join(" / ")}#{pay} — #{expense.description}"
+  pay = expense.user&.pro? && expense.payment_method.present? ? " · #{expense.payment_method}" : ""
+  amount = expense.user&.pro? ? format_money(expense.amount_cents) : format_ars(expense.amount_cents)
+  "#{head}: #{amount} — #{[expense.category, expense.subcategory].compact.join(" / ")}#{pay} — #{expense.description}"
 end
 
 def clear_open_drafts(user)
@@ -393,17 +474,26 @@ def low_amount_question(original_cents, suggested_cents, rate)
 end
 
 def save_or_confirm(bot, chat_id, user, amount_cents:, description:, kind:, extracted:, raw_text:, metadata:, prefix: nil, payment_method: nil)
+  unless user.can_add_movements?(1)
+    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota))
+    return
+  end
   rate = BnaOfficialDollar.current
   cat = classify_entry(description, kind, extracted)
   method = payment_method.presence || extracted&.payment_method
-  check = AmountSanityChecker.check(
-    amount_cents: amount_cents,
-    description: description,
-    kind: kind,
-    category: cat.category,
-    user: user,
-    rate: rate
-  )
+  check =
+    if user.pro?
+      AmountSanityChecker.check(
+        amount_cents: amount_cents,
+        description: description,
+        kind: kind,
+        category: cat.category,
+        user: user,
+        rate: rate
+      )
+    else
+      AmountSanityChecker::Check.new(suspicious: false, item_label: nil, usd: nil, min_usd: nil, max_usd: nil, suggestions: [], reason: nil)
+    end
 
   if check.suspicious
     ask_confirmation_for(
@@ -465,6 +555,11 @@ def handle_confirmation(bot, chat_id, user, text)
     chosen = match["amount_cents"].to_i if match
   end
   return :ignore unless chosen.to_i.positive?
+
+  unless user.can_add_movements?(1)
+    bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota), reply_markup: remove_keyboard)
+    return :handled
+  end
 
   extracted = ExpenseAiExtractor::Extraction.new(
     amount_cents: chosen,
@@ -578,21 +673,41 @@ def ask_next_confirmation(bot, chat_id, user, raw_text:, queue:)
 end
 
 def save_movements(bot, chat_id, user, movements, raw_text:, metadata: {}, prefix: nil)
+  payable = movements.select { |m| m[:amount_cents].to_i.positive? }
+  unless user.pro?
+    left = user.free_movements_left
+    if left <= 0
+      bot.api.send_message(chat_id: chat_id, text: upgrade_text(feature: :quota))
+      return
+    end
+    if payable.size > left
+      payable = payable.first(left)
+      bot.api.send_message(
+        chat_id: chat_id,
+        text: "En el plan gratis te quedan #{left} este mes. Guardo esos y el resto pide Pro (/pro)."
+      )
+    end
+  end
+
   saved = []
   pending = []
 
-  movements.each do |movement|
+  payable.each do |movement|
     next if movement[:amount_cents].to_i <= 0
 
     cat = classify_entry(movement[:description], movement[:kind], movement[:extracted])
-    check = AmountSanityChecker.check(
-      amount_cents: movement[:amount_cents],
-      description: movement[:description],
-      kind: movement[:kind],
-      category: cat.category,
-      user: user,
-      rate: BnaOfficialDollar.current
-    )
+    if user.pro?
+      check = AmountSanityChecker.check(
+        amount_cents: movement[:amount_cents],
+        description: movement[:description],
+        kind: movement[:kind],
+        category: cat.category,
+        user: user,
+        rate: BnaOfficialDollar.current
+      )
+    else
+      check = AmountSanityChecker::Check.new(suspicious: false, item_label: nil, usd: nil, min_usd: nil, max_usd: nil, suggestions: [], reason: nil)
+    end
     if check.suspicious
       pending << [movement, check]
     else
@@ -768,6 +883,11 @@ def voice_download_ext(media)
 end
 
 def handle_voice(bot, token, message, user, ai)
+  unless user.pro?
+    bot.api.send_message(chat_id: message.chat.id, text: upgrade_text(feature: :voice))
+    return
+  end
+
   media = message.voice || message.audio
   return bot.api.send_message(chat_id: message.chat.id, text: "No pude leer el audio.") unless media
 
@@ -915,7 +1035,7 @@ Telegram::Bot::Client.run(token) do |bot|
         next
       end
 
-      if user.needs_onboarding? && !%w[inicio start ayuda help].include?(cmd)
+      if user.needs_onboarding? && !%w[inicio start ayuda help pro].include?(cmd)
         if text.start_with?("/") && text.present?
           bot.api.send_message(chat_id: message.chat.id, text: "Primero decime a qué te dedicás (podés escribirlo, ej: soy programador).")
           ask_occupation(bot, message.chat.id, intro: false)
@@ -957,6 +1077,11 @@ Telegram::Bot::Client.run(token) do |bot|
 
       if %w[ayuda help].include?(cmd)
         bot.api.send_message(chat_id: message.chat.id, text: HELP_TEXT)
+        next
+      end
+
+      if %w[pro].include?(cmd)
+        send_pro(bot, message.chat.id, user)
         next
       end
 

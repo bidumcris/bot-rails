@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_201500) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_07_131500) do
   create_table "draft_expenses", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "error"
@@ -47,14 +47,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_201500) do
   create_table "users", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "currency", default: "ARS"
+    t.string "mp_payment_id"
+    t.string "mp_preference_id"
     t.string "occupation"
     t.string "onboarding_step"
     t.string "phone_e164"
+    t.string "pro_source"
+    t.datetime "pro_until"
     t.string "telegram_chat_id"
     t.string "telegram_user_id", null: false
     t.string "time_zone"
+    t.datetime "trial_used_at"
     t.datetime "updated_at", null: false
+    t.index ["mp_payment_id"], name: "index_users_on_mp_payment_id"
     t.index ["phone_e164"], name: "index_users_on_phone_e164", unique: true, where: "phone_e164 IS NOT NULL"
+    t.index ["pro_until"], name: "index_users_on_pro_until"
     t.index ["telegram_user_id"], name: "index_users_on_telegram_user_id", unique: true
   end
 
