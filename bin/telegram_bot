@@ -148,32 +148,42 @@ def send_pro(bot, chat_id, user)
   MercadoPagoCheckout.sync_user!(user)
   user.reload
 
-  if user.start_trial!
-    bot.api.send_message(
-      chat_id: chat_id,
-      text: "Listo: #{ProPlan.trial_days} días de Pro (voz, PDF, IA, sin tope).\nHasta #{user.pro_until.in_time_zone.strftime('%d/%m %H:%M')}.\nCuando se venza, /pro de nuevo para pagar #{ProPlan.price_label} por #{ProPlan.paid_days} días."
-    )
-    return
+  started_trial = user.start_trial!
+  user.reload if started_trial
+
+  lines = []
+  if started_trial
+    lines << "Listo: #{ProPlan.trial_days} días de Pro (voz, PDF, IA, sin tope)."
+    lines << "Hasta #{user.pro_until.in_time_zone.strftime('%d/%m %H:%M')}."
+  elsif user.pro?
+    lines << "Ya estás en Pro."
+    lines << user.plan_label
+  else
+    lines << "Plan gratis: #{user.movements_this_month}/#{ProPlan.free_movements} movimientos este mes."
   end
 
-  if user.pro?
-    bot.api.send_message(chat_id: chat_id, text: "Ya estás en Pro.\n#{user.plan_label}")
-    return
-  end
+  lines << ""
+  lines << "Pro: #{ProPlan.price_label} por #{ProPlan.paid_days} días."
 
   unless MercadoPagoCheckout.enabled?
-    bot.api.send_message(
-      chat_id: chat_id,
-      text: "El plan gratis tiene #{ProPlan.free_movements} movimientos por mes. Pro (voz, PDF, IA, sin tope) se paga por Mercado Pago. El cobro todavía se está activando."
-    )
+    lines << "El cobro por Mercado Pago todavía se está activando."
+    bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
     return
   end
 
   result = MercadoPagoCheckout.create_preference(user)
   unless result.ok
-    bot.api.send_message(chat_id: chat_id, text: "No pude armar el pago ahora. Probá de nuevo en un rato.")
+    warn("[send_pro] preference failed: #{result.error}")
+    lines << "No pude armar el pago ahora. Probá de nuevo en un rato."
+    bot.api.send_message(chat_id: chat_id, text: lines.join("\n"))
     return
   end
+
+  lines << (
+    user.pro? ?
+      "Si pagás ahora, se suman #{ProPlan.paid_days} días cuando se venza el período actual." :
+      "Pagá y después tocá /pro otra vez para activarlo."
+  )
 
   kb = Telegram::Bot::Types::InlineKeyboardMarkup.new(
     inline_keyboard: [[
@@ -183,11 +193,7 @@ def send_pro(bot, chat_id, user)
       )
     ]]
   )
-  bot.api.send_message(
-    chat_id: chat_id,
-    text: "Plan gratis: #{user.movements_this_month}/#{ProPlan.free_movements} movimientos este mes.\nPro: #{ProPlan.price_label} por #{ProPlan.paid_days} días (voz, PDF, IA, sin tope).\nPagá y después tocá /pro otra vez para activarlo.",
-    reply_markup: kb
-  )
+  bot.api.send_message(chat_id: chat_id, text: lines.join("\n"), reply_markup: kb)
 end
 
 def dollar_rate_line(rate)
