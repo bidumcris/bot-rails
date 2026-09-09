@@ -66,6 +66,39 @@ class ExpenseTextParserTest < ActiveSupport::TestCase
     assert_equal 850_000, items[1].amount_cents
   end
 
+  test "audio: cobré y gasté en el mismo mensaje" do
+    items = parse_many("cobré 25000 y gasté 8500 en hamburguesa")
+    assert_equal 2, items.size
+    assert_equal ["income", "expense"], items.map(&:kind)
+    assert_equal [2_500_000, 850_000], items.map(&:amount_cents)
+  end
+
+  test "audio: ingreso y egreso" do
+    items = parse_many("ingreso 21000 y egreso super 18000")
+    assert_equal 2, items.size
+    assert_equal ["income", "expense"], items.map(&:kind)
+    assert_equal [2_100_000, 1_800_000], items.map(&:amount_cents)
+  end
+
+  test "audio whisper cobre y pagué" do
+    items = parse_many("cobre 25000 y pagué hamburguesa 8500")
+    assert_equal 2, items.size
+    assert_equal ["income", "expense"], items.map(&:kind)
+  end
+
+  test "me depositaron y compré" do
+    items = parse_many("me depositaron 21000 y compré super 18000")
+    assert_equal 2, items.size
+    assert_equal ["income", "expense"], items.map(&:kind)
+  end
+
+  test "detect_kind no pisa un gasto si el cobro está en otra frase" do
+    assert_equal "income", ExpenseTextParser.detect_kind("cobré 25000")
+    assert_equal "expense", ExpenseTextParser.detect_kind("gasté 8500 en hamburguesa")
+    assert_equal "expense", ExpenseTextParser.detect_kind("pagué honorarios 50000")
+    assert_equal "income", ExpenseTextParser.detect_kind("me llegó 15000")
+  end
+
   test "sin monto devuelve un item vacío" do
     items = parse_many("compré facturas")
     assert_equal 1, items.size

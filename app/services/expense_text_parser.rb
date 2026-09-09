@@ -93,6 +93,11 @@ class ExpenseTextParser
 
   def self.split_segments(text)
     expanded = expand_shorthand_amounts(text.to_s)
+    by_kind = split_by_kind_changes(expanded)
+    if by_kind.size >= 2
+      return by_kind.flat_map { |seg| split_line_by_amounts(seg) }
+    end
+
     lines = expanded.split(/\n+/).map { |l| l.to_s.strip }.reject(&:blank?)
     if lines.size >= 2
       lined = lines.flat_map { |line| split_line_by_amounts(line) }
@@ -100,6 +105,23 @@ class ExpenseTextParser
     end
 
     split_line_by_amounts(expanded)
+  end
+
+  KIND_BOUNDARY = /
+    \s+(?:y|e|m[aá]s|tambi[eé]n|,|;)\s+
+    (?=
+      (?:
+        cobr[eoé]|cobrado|ingreso|ingres[eé]|egreso|egres[eé]|
+        gast[eé]|gasto\b|pagu[eé]|pagado|compr[eé]|
+        me\s+(?:transfer|deposit|lleg|mandaron|enviaron|pagaron)|
+        depositaron|recib[ií]|vend[ií]
+      )
+    )
+  /ix
+
+  def self.split_by_kind_changes(text)
+    parts = text.to_s.split(KIND_BOUNDARY).map { |s| clean_segment(s) }.reject(&:blank?)
+    parts.size >= 2 ? parts : [text]
   end
 
   def self.split_line_by_amounts(expanded)
@@ -154,10 +176,22 @@ class ExpenseTextParser
 
   STRONG_INCOME = /
     \b(
-      cobr[eo]|cobré|ingreso|ingres[eé]|
-      me\s+transfer|me\s+deposit|deposit[oó]|
-      recib[ií]|me\s+pagaron|pago\s+recibido|
-      sueldo|honorarios?\s+cobrad
+      cobr[eoé]|cobrado|cobrada|
+      ingreso|ingres[eé]|
+      me\s+transfer|me\s+deposit|me\s+lleg[oó]|me\s+mandaron|me\s+enviaron|
+      deposit[oó]|depositaron|
+      recib[ií]|recibido|recib[ií]mos|
+      me\s+pagaron|pago\s+recibido|
+      sueldo|honorarios?\s+cobrad|
+      vend[ií]
+    )\b
+  /ix
+
+  STRONG_EXPENSE = /
+    \b(
+      gast[eé]|gasto\b|egreso|egres[eé]|
+      pagu[eé]|pagado|pagu[eé]mos|
+      compr[eé]|comprado
     )\b
   /ix
 
@@ -165,14 +199,37 @@ class ExpenseTextParser
 
   def self.detect_kind(text)
     t = text.to_s
-    return "income" if t.match?(STRONG_INCOME)
-    return "expense" if PaymentMethodDetector.outflow?(t)
+    has_income = t.match?(STRONG_INCOME)
+    has_expense = strong_expense?(t) || PaymentMethodDetector.outflow?(t)
+
+    if has_income && has_expense
+      return kind_from_nearest_signal(t)
+    end
+    return "income" if has_income
+    return "expense" if has_expense
     return "income" if t.match?(BARE_TRANSFER_INCOME)
     "expense"
   end
 
+  def self.kind_from_nearest_signal(text)
+    hits = []
+    text.to_s.scan(STRONG_INCOME) { hits << ["income", $~.begin(0)] }
+    text.to_s.scan(STRONG_EXPENSE) { hits << ["expense", $~.begin(0)] }
+    return "expense" if hits.empty?
+
+    hits.max_by { |_, pos| pos }.first
+  end
+
   def self.strong_income?(text)
     text.to_s.match?(STRONG_INCOME)
+  end
+
+  def self.strong_expense?(text)
+    text.to_s.match?(STRONG_EXPENSE)
+  end
+
+  def self.kind_locked?(text)
+    strong_income?(text) || strong_expense?(text) || PaymentMethodDetector.outflow?(text) || text.to_s.match?(BARE_TRANSFER_INCOME)
   end
 
   def self.finalize_description(text, fallback)

@@ -96,8 +96,8 @@ class ExpenseAiExtractor
 
     kind = data["kind"].to_s
     kind = kind_guess unless %w[expense income].include?(kind)
-    if PaymentMethodDetector.outflow?(snippet) && !ExpenseTextParser.strong_income?(snippet)
-      kind = "expense"
+    if ExpenseTextParser.kind_locked?(snippet)
+      kind = ExpenseTextParser.detect_kind(snippet)
     end
 
     categories = kind == "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES
@@ -145,6 +145,7 @@ class ExpenseAiExtractor
       Pagos, compras, regalos que vos diste = expense.
       Si dice que PAGÓ por transferencia, Mercado Pago, tarjeta o efectivo, es expense. El medio de pago no lo convierte en ingreso.
       Si el mensaje tiene VARIOS movimientos, devolvé uno por cada monto. No los sumes.
+      Si hay un cobro/ingreso Y un gasto/egreso en el mismo audio o texto, son DOS items con kind distinto.
       #{extra}
     SYS
   end
@@ -169,6 +170,8 @@ class ExpenseAiExtractor
       - "hamburguesa 8500 y coca 2000" => items: [{expense, Comida, 850000, hamburguesa}, {expense, Comida, 200000, coca}]
       - "Compra 2 menús 9000 cada uno" => items: [{expense, Comida, 1800000}]
       - "6000 milanesas de pollo" => items: [{expense, Comida, 600000}]
+      - "cobré 25000 y gasté 8500 en hamburguesa" => items: [{income, Trabajo, 2500000}, {expense, Comida, 850000, hamburguesa}]
+      - "ingreso 21000 y egreso super 18000" => items: [{income, Transferencias, 2100000}, {expense, Comida, 1800000}]
 
       Texto: "#{raw}"
     TEXT

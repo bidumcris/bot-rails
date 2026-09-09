@@ -316,11 +316,7 @@ def resolve_amount_and_kind(text, extracted)
     text,
     usd_venta: BnaOfficialDollar.current&.venta
   )
-  if PaymentMethodDetector.outflow?(text) && !ExpenseTextParser.strong_income?(text)
-    kind = "expense"
-  elsif extracted&.kind.present?
-    kind = extracted.kind
-  end
+  kind = locked_or_ai_kind(text, kind, extracted&.kind)
 
   if text.match?(/cada\s+(uno|una)\b/i) && extracted&.amount_cents.to_i.positive?
     amount_cents = extracted.amount_cents
@@ -359,7 +355,22 @@ end
 def pick_ai_for(item, ai_items, index)
   ais = Array(ai_items)
   match = ais.find { |a| a&.amount_cents.to_i.positive? && a.amount_cents.to_i == item.amount_cents.to_i }
-  match || ais[index]
+  return match if match
+
+  cand = ais[index]
+  return if cand.nil?
+  return cand if cand.amount_cents.to_i <= 0 || cand.amount_cents.to_i == item.amount_cents.to_i
+
+  nil
+end
+
+def locked_or_ai_kind(snippet, parsed_kind, ai_kind)
+  kind = ExpenseTextParser.detect_kind(snippet)
+  return kind if ExpenseTextParser.kind_locked?(snippet)
+  return parsed_kind if parsed_kind.to_s == "income"
+  return ai_kind.to_s if %w[expense income].include?(ai_kind.to_s)
+
+  kind
 end
 
 def resolve_movements(text, ai_items)
@@ -372,12 +383,7 @@ def resolve_movements(text, ai_items)
   parsed.map.with_index do |item, index|
     ai = pick_ai_for(item, list, index)
     snippet = item.raw_text.presence || text
-    kind = item.kind
-    if PaymentMethodDetector.outflow?(snippet) && !ExpenseTextParser.strong_income?(snippet)
-      kind = "expense"
-    elsif ai&.kind.present? && %w[expense income].include?(ai.kind.to_s)
-      kind = ai.kind
-    end
+    kind = locked_or_ai_kind(snippet, item.kind, ai&.kind)
 
     description = item.description
     if ai&.description.present?
@@ -405,7 +411,8 @@ def resolve_movements(text, ai_items)
 end
 
 def classify_entry(description, kind, extracted)
-  if extracted&.category.present?
+  allowed = kind.to_s == "income" ? ExpenseAiExtractor::INCOME_CATEGORIES : ExpenseAiExtractor::EXPENSE_CATEGORIES
+  if extracted&.category.present? && allowed.include?(extracted.category)
     ExpenseClassifier::Category.new(
       category: extracted.category,
       subcategory: extracted.subcategory,
