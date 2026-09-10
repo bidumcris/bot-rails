@@ -49,4 +49,14 @@ class AmountSanityCheckerTest < ActiveSupport::TestCase
     assert_equal :too_high, result.reason
     assert result.suggestions.any? { |s| s.amount_cents == 1_250_000 }
   end
+
+  test "alquiler 400 mil no pregunta" do
+    result = check(40_000_000, "Pago alquiler", category: "Hogar")
+    assert_not result.suspicious
+  end
+
+  test "alquiler 400 mil categoriza el rango de alquiler" do
+    result = check(40_000_000, "alquiler")
+    assert_not result.suspicious
+  end
 end

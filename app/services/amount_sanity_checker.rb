@@ -39,7 +39,11 @@ class AmountSanityChecker
     [/m[eé]dic[oa]|doctor|doctora|consultorio|consulta/, 12.0..90.0, "una consulta médica"],
     [/dentist|odont[oó]log/, 15.0..120.0, "el dentista"],
     [/psic[oó]log|psiquiatra|terapia/, 15.0..80.0, "la consulta"],
-    [/farmacia|remedio|medicament/, 3.0..40.0, "la farmacia"]
+    [/farmacia|remedio|medicament/, 3.0..40.0, "la farmacia"],
+    [/alquiler|expensas|\babl\b|inmobiliaria/, 50.0..800.0, "el alquiler"],
+    [/luz|edenor|edesur|epe/, 8.0..80.0, "la luz"],
+    [/\bgas\b|metrogas|naturgy/, 8.0..80.0, "el gas"],
+    [/internet|wifi|fibra/, 8.0..60.0, "internet"]
   ].freeze
 
   CATEGORY_USD = {
@@ -48,8 +52,18 @@ class AmountSanityChecker
     "Transporte" => 0.4..40.0,
     "Ocio" => 1.0..80.0,
     "Salud" => 4.0..90.0,
-    "Servicios" => 8.0..150.0
+    "Servicios" => 8.0..150.0,
+    "Hogar" => 8.0..800.0,
+    "Impuestos" => 5.0..400.0,
+    "Compras" => 5.0..400.0,
+    "Regalos" => 2.0..200.0,
+    "Otros" => 1.0..400.0
   }.freeze
+
+  HISTORY_STOPWORDS = %w[
+    pago pague pagado gasto gaste egreso ingreso compra compre comprado
+    monto pesos cada este esta eso esa para con por una unos unas
+  ].freeze
 
   HIGH_MULTIPLIER = 2.2
   LOW_FACTOR = 3.0
@@ -78,8 +92,11 @@ class AmountSanityChecker
 
     history_cents = historical_median_cents(user, description)
     if history_cents && history_cents.positive? && amount_cents > history_cents * 4
-      range ||= 0.0..(BnaOfficialDollar.ars_to_usd(history_cents, rate: rate).to_f * 2)
-      label ||= description.to_s.strip
+      hist_usd = BnaOfficialDollar.ars_to_usd(history_cents, rate: rate).to_f
+      if hist_usd.positive?
+        range ||= (hist_usd * 0.4)..(hist_usd * 2.5)
+        label ||= description.to_s.strip
+      end
     end
 
     return ok if range.nil? || usd.nil?
@@ -161,7 +178,9 @@ class AmountSanityChecker
   def historical_median_cents(user, description)
     return nil unless user
 
-    token = description.to_s.downcase.scan(/[a-záéíóúñ]{4,}/).first
+    token = description.to_s.downcase.scan(/[a-záéíóúñ]{4,}/).find do |word|
+      HISTORY_STOPWORDS.exclude?(word)
+    end
     return nil unless token
 
     amounts = user.expenses.expenses_only

@@ -21,6 +21,7 @@ class ExpenseClassifier
   def classify_expense(desc)
     d = desc.to_s.downcase
     rules = [
+      [/alquiler|expensas|\babl\b|inmobiliaria/, ["Hogar", "Alquiler"]],
       [/regalo|maestro|cumple|navidad/, ["Regalos", nil]],
       [/hamburg|pizza|comida|para\s+comer|\bcomer\b|caf[eé]|super(mercado)?|men[uú]|kiosko|gaseosa|coca|almuerzo|cena|desayuno|milanesa|pollo/, ["Comida", nil]],
       [/internet|wifi|fibra|movistar|personal|claro|telecentro/, ["Servicios", "Internet"]],

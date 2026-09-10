@@ -57,6 +57,7 @@ SPANISH_COMMANDS = [
 ].freeze
 
 CONFIRM_YES = "Sí, está bien"
+CONFIRM_OTHER = "Otro monto"
 CONFIRM_CANCEL = "Cancelar"
 
 def ensure_user(message)
@@ -543,7 +544,7 @@ end
 def confirmation_keyboard(suggestions)
   rows = [[btn(CONFIRM_YES)]]
   suggestions.each { |s| rows << [btn(suggestion_label(s.amount_cents))] }
-  rows << [btn(CONFIRM_CANCEL)]
+  rows << [btn(CONFIRM_OTHER), btn(CONFIRM_CANCEL)]
   Telegram::Bot::Types::ReplyKeyboardMarkup.new(
     keyboard: rows,
     resize_keyboard: true,
@@ -569,6 +570,8 @@ def suspicious_message(check, amount_cents, description, rate)
     lines << ""
     lines << low_amount_question(amount_cents, sug.amount_cents, rate)
   end
+  lines << ""
+  lines << "Si está bien, confirmá. Si no, tocá #{CONFIRM_OTHER} o escribí el monto."
   lines.join("\n")
 end
 
@@ -656,12 +659,30 @@ def handle_confirmation(bot, chat_id, user, text)
     return :handled
   end
 
+  if text == CONFIRM_OTHER || lowered.match?(/\Aotro(\s+monto)?\z/)
+    draft.update!(state: "awaiting_amount")
+    bot.api.send_message(
+      chat_id: chat_id,
+      text: with_name(user, "¿cuánto fue el monto en ARS? Sirve 400000, 400 mil o 400.000."),
+      reply_markup: remove_keyboard
+    )
+    return :handled
+  end
+
   chosen = nil
   if text == CONFIRM_YES || lowered.match?(/\A(s[ií]|ok|dale|confirmo)\z/)
     chosen = data["amount_cents"].to_i
   else
     match = suggestions.find { |s| text == suggestion_label(s["amount_cents"].to_i) }
     chosen = match["amount_cents"].to_i if match
+  end
+  if chosen.to_i <= 0 && text.match?(/\d/)
+    parsed_cents, = ExpenseTextParser.parse(
+      text,
+      currency: user.currency,
+      usd_venta: BnaOfficialDollar.current&.venta
+    )
+    chosen = parsed_cents if parsed_cents.to_i.positive?
   end
   return :ignore unless chosen.to_i.positive?
 
